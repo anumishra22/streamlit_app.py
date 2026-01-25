@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 import json
 import asyncio
 import os
@@ -6,18 +6,14 @@ import threading
 from playwright.async_api import async_playwright
 from werkzeug.utils import secure_filename
 import time
-import random
+import gc # Garbage Collector for RAM cleaning
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 
-# --- Setup Folders ---
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'])
-if not os.path.exists('static'):
-    os.makedirs('static')
 
-# --- Global State ---
 bot_running = False
 bot_logs = []
 
@@ -27,7 +23,6 @@ def add_log(message):
     if len(bot_logs) > 50:
         bot_logs.pop(0)
 
-# --- Helper Functions ---
 def save_file(filename, content):
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -83,11 +78,10 @@ def index():
 def get_logs():
     return jsonify(bot_logs)
 
-@app.route('/debug')
-def view_debug():
-    if os.path.exists('static/debug.png'):
-        return send_from_directory('static', 'debug.png')
-    return "No debug screenshot yet."
+# --- KEEP ALIVE ROUTE ---
+@app.route('/keep_alive')
+def keep_alive():
+    return "I am alive"
 
 @app.route('/start_sending')
 def start_sending():
@@ -103,8 +97,9 @@ def start_sending():
         add_log("❌ Error: Missing Details.")
         return redirect(url_for('index'))
         
-    add_log("🚀 Starting Stealth Bot...")
-    threading.Thread(target=lambda: asyncio.run(run_bot(thread_id, msg_content, delay_time, cookies_txt)), daemon=True).start()
+    add_log("🚀 Starting Marathon Bot...")
+    # Loop alag thread me chalega
+    threading.Thread(target=start_background_loop, args=(thread_id, msg_content, delay_time, cookies_txt), daemon=True).start()
     return redirect(url_for('index'))
 
 @app.route('/stop_bot')
@@ -114,122 +109,115 @@ def stop_bot():
     add_log("🛑 Stop signal sent.")
     return redirect(url_for('index'))
 
-async def run_bot(thread_id, msg_content, delay, cookies_str):
+def start_background_loop(thread_id, msg_content, delay, cookies_str):
+    # This wrapper function keeps restarting the browser session
     global bot_running
     bot_running = True
     
+    while bot_running:
+        try:
+            # Browser session start
+            asyncio.run(run_bot_session(thread_id, msg_content, delay, cookies_str))
+            
+            # Session end hone ke baad RAM saaf karein
+            gc.collect() 
+            add_log("♻️ RAM Cleaned. Restarting browser...")
+            time.sleep(5) # Thoda rest taaki CPU cool ho jaye
+            
+        except Exception as e:
+            add_log(f"❌ Restart Error: {str(e)}")
+            time.sleep(10)
+
+async def run_bot_session(thread_id, msg_content, delay, cookies_str):
+    global bot_running
     try:
         delay = float(delay)
         async with async_playwright() as p:
-            add_log("Launching Stealth Browser...")
+            add_log("Launching Mini Browser...")
             
-            # --- STEALTH MODE SETTINGS ---
+            # --- SUPER LOW MEMORY CONFIG ---
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
-                    '--disable-blink-features=AutomationControlled', # Robot detection OFF
                     '--no-sandbox',
-                    '--disable-infobars',
                     '--disable-dev-shm-usage',
-                    '--start-maximized'
+                    '--disable-gpu',
+                    '--disable-extensions',
+                    '--disable-blink-features=AutomationControlled'
                 ]
             )
             
-            # Asli Computer User-Agent
-            context = await browser.new_context(
-                viewport={'width': 1366, 'height': 768},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
+            # Mobile Viewport = Less RAM
+            context = await browser.new_context(viewport={'width': 600, 'height': 800})
             
             if cookies_str:
                 try:
                     if cookies_str.startswith('['):
-                        cookie_list = json.loads(cookies_str)
+                        cl = json.loads(cookies_str)
                     else:
-                        cookie_list = []
+                        cl = []
                         for pair in cookies_str.split(';'):
                             if '=' in pair:
                                 k, v = pair.split('=', 1)
-                                cookie_list.append({'name': k.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
-                    await context.add_cookies(cookie_list)
-                    add_log("Cookies loaded.")
+                                cl.append({'name': k.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
+                    await context.add_cookies(cl)
                 except: pass
 
             page = await context.new_page()
-            target_url = f"https://www.facebook.com/messages/t/{thread_id}"
-            add_log(f"Opening Chat...")
             
-            await page.goto(target_url, timeout=60000)
-            await asyncio.sleep(10)
-
-            if "login" in page.url:
-                add_log("❌ Cookies Expired! Login page detected.")
-                await page.screenshot(path='static/debug.png')
-                bot_running = False
+            try:
+                await page.goto(f"https://www.facebook.com/messages/t/{thread_id}", timeout=45000)
+                await asyncio.sleep(5)
+            except:
                 await browser.close()
-                return
+                return # Network timeout handling
 
-            # --- Expanded Selectors List ---
-            selectors = [
-                'div[aria-label="Message"]', 
-                'div[role="textbox"]', 
-                'div[contenteditable="true"]',
-                'div[data-lexical-editor="true"]', # New FB Editor
-                'div[aria-label="Type a message..."]'
-            ]
+            # Cookie Banner Remover
+            try:
+                await page.click('span:has-text("Allow all cookies")', timeout=2000)
+            except: pass
+
+            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]']
+            box_found = False
             
-            retry_count = 0
-            while bot_running:
-                box_found = False
-                
-                # Anti-Popup: Click on blank space & press ESC
+            # --- Anti-Popup ---
+            try:
+                await page.keyboard.press('Escape')
+            except: pass
+
+            for sel in selectors:
                 try:
-                    await page.mouse.click(10, 10)
-                    await page.keyboard.press('Escape')
-                except: pass
+                    if await page.query_selector(sel):
+                        await page.click(sel)
+                        box_found = True
+                        break
+                except: continue
 
-                for sel in selectors:
-                    try:
-                        # Wait for selector (Better than query)
-                        if await page.query_selector(sel):
-                            await page.click(sel)
-                            box_found = True
-                            retry_count = 0
-                            break
-                    except: continue
+            if not box_found:
+                 add_log("⚠️ Box missing. Resetting...")
+                 await browser.close()
+                 return
+
+            # --- SEND ONLY 20 MESSAGES PER SESSION ---
+            # Browser ko 20 message ke baad band kar denge taaki RAM bhare na
+            for i in range(20):
+                if not bot_running: break
                 
-                if not box_found:
-                     retry_count += 1
-                     add_log(f"⚠️ Looking for box ({retry_count})...")
-                     
-                     if retry_count % 3 == 0:
-                         await page.screenshot(path='static/debug.png')
-                         add_log("📸 Taking screenshot to check...")
-                     
-                     if retry_count > 10:
-                         add_log("❌ Failed. Check /debug for photo.")
-                         bot_running = False
-                         break
-                         
-                     await asyncio.sleep(3)
-                     continue
-
                 try:
                     await page.keyboard.type(msg_content)
                     await asyncio.sleep(0.5)
                     await page.keyboard.press('Enter')
-                    add_log(f"📨 Sent: {msg_content[:10]}...")
+                    add_log(f"📨 Sent ({i+1}/20)...")
                     await asyncio.sleep(delay)
-                except Exception as e:
-                    add_log(f"⚠️ Send Error: {str(e)}")
-                    await asyncio.sleep(5)
-
+                except:
+                    break
+            
+            # Browser close explicitly
+            await context.close()
             await browser.close()
-            add_log("Bot Stopped.")
             
     except Exception as e:
-        add_log(f"❌ Error: {str(e)}")
-        bot_running = False
+        add_log(f"⚠️ Session Error: {str(e)}")
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
