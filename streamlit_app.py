@@ -3,15 +3,13 @@ import json
 import asyncio
 import os
 import time
-import sys
 import threading
 from playwright.async_api import async_playwright
 
 # --- Page Config ---
 st.set_page_config(page_title="FB Thread Bot", page_icon="⚡", layout="wide")
 
-# --- HTML/CSS for matching original UI ---
-# Streamlit mein HTML 'st.markdown' ke zariye inject kiya jata hai
+# --- HTML/CSS for UI ---
 st.markdown("""
     <style>
     .main { background: #f0f2f5; }
@@ -80,7 +78,14 @@ async def run_playwright_bot_loop(target_url, msg_content, delay):
     async with async_playwright() as p:
         try:
             launch_args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-            browser = await p.chromium.launch(headless=True, args=launch_args)
+            
+            # --- IMPORTANT FIX: Pointing to System Chromium ---
+            browser = await p.chromium.launch(
+                headless=True,
+                executable_path="/usr/bin/chromium",  # This is the key fix for Streamlit Cloud
+                args=launch_args
+            )
+            
             context = await browser.new_context(
                 viewport={'width': 1280, 'height': 800},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -110,6 +115,7 @@ async def run_playwright_bot_loop(target_url, msg_content, delay):
                     except: continue
                 
                 if not msg_box:
+                    # Fallback click if selector fails
                     await page.mouse.click(640, 750)
                 
                 await page.keyboard.type(msg_content, delay=0)
@@ -190,6 +196,7 @@ with col1:
         if all([t_id, m_con, s_val]):
             url = f"https://www.facebook.com/messages/t/{t_id}"
             dly = float(s_val)
+            # Running in a separate thread so UI doesn't freeze
             threading.Thread(target=lambda: asyncio.run(run_playwright_bot_loop(url, m_con, dly)), daemon=True).start()
             st.session_state.bot_running = True
             st.rerun()
