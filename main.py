@@ -9,7 +9,8 @@ import time
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-# Folders create karein agar nahi hain
+
+# --- Folders Setup ---
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'])
 if not os.path.exists('static'):
@@ -50,7 +51,7 @@ def index():
             speed = request.form.get('speed')
             cookies_raw = request.form.get('cookies')
             
-            # --- File Upload Logic (Fixed Crash Issue) ---
+            # --- File Upload Fix (Crash Prevention) ---
             if 'message_file' in request.files:
                 file = request.files['message_file']
                 if file and file.filename != '':
@@ -58,11 +59,10 @@ def index():
                     filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'message.txt')
                     file.save(filepath)
                     
-                    # Safe Read: errors='ignore' crash hone se bachayega
+                    # Safe Read: errors='ignore' prevents 500 Error
                     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                         save_file('message.txt', content)
-                    
                     add_log("Message file updated.")
 
             if thread: save_file('thread.txt', thread)
@@ -129,6 +129,7 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(viewport={'width': 1280, 'height': 800})
             
+            # --- Cookie Loading ---
             if cookies_str:
                 try:
                     if cookies_str.startswith('['):
@@ -152,6 +153,7 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             await page.goto(target_url, timeout=60000)
             await asyncio.sleep(10)
 
+            # --- Login Check ---
             if "login" in page.url or "checkpoint" in page.url:
                 add_log("❌ Login Failed! Taking screenshot...")
                 await page.screenshot(path='static/debug.png')
@@ -160,30 +162,29 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
                 await browser.close()
                 return
 
+            # --- Selectors ---
             selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]']
             
-            retry_count = 0
             while bot_running:
                 box_found = False
+                
+                # --- Anti-Popup: Clear overlays ---
+                try:
+                    await page.keyboard.press('Escape') # Popups hatane ke liye
+                except: pass
+
                 for sel in selectors:
                     try:
                         if await page.query_selector(sel):
                             await page.click(sel)
                             box_found = True
-                            retry_count = 0
                             break
                     except: continue
                 
                 if not box_found:
-                     retry_count += 1
-                     add_log(f"⚠️ Box missing ({retry_count}/5)...")
-                     if retry_count >= 5:
-                         await page.screenshot(path='static/debug.png')
-                         add_log("❌ Failed. Screenshot saved at /debug")
-                         bot_running = False
-                         break
-                     await asyncio.sleep(5)
-                     continue
+                     add_log(f"⚠️ Box missing, clearing popups...")
+                     await asyncio.sleep(2)
+                     continue # Retry immediately
 
                 try:
                     await page.keyboard.type(msg_content)
