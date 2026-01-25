@@ -2,18 +2,24 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for
 import json
 import asyncio
 import os
-import time
-import sys
 import threading
 from playwright.async_api import async_playwright
 from werkzeug.utils import secure_filename
+import time
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# --- Global Bot State ---
+# --- Global State ---
 bot_running = False
+bot_logs = []  # लाइव लॉग्स यहाँ सेव होंगे
+
+def add_log(message):
+    timestamp = time.strftime("%H:%M:%S")
+    bot_logs.append(f"[{timestamp}] {message}")
+    if len(bot_logs) > 50:  # सिर्फ आखिरी 50 लाइन्स रखें
+        bot_logs.pop(0)
 
 # --- Helper Functions ---
 def save_file(filename, content):
@@ -25,26 +31,8 @@ def read_file(filename):
         if os.path.exists(filename):
             with open(filename, 'r', encoding='utf-8') as f:
                 return f.read().strip()
-    except Exception:
-        pass
-    return None
-
-def parse_cookie_string(cookie_str):
-    cookies = []
-    pairs = cookie_str.split(';')
-    for pair in pairs:
-        if '=' in pair:
-            try:
-                name, value = pair.strip().split('=', 1)
-                cookies.append({
-                    'name': name.strip(),
-                    'value': value.strip(),
-                    'domain': '.facebook.com',
-                    'path': '/'
-                })
-            except:
-                continue
-    return cookies
+    except:
+        return None
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -54,115 +42,151 @@ def index():
         speed = request.form.get('speed')
         cookies_raw = request.form.get('cookies')
         
-        # Handle file upload for messages
+        # Files Handling
         if 'message_file' in request.files:
             file = request.files['message_file']
             if file and file.filename != '':
                 filename = secure_filename(file.filename)
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'message.txt')
                 file.save(filepath)
-                # Also save to current dir for compatibility with existing logic
+                # Sync content
                 file.seek(0)
                 save_file('message.txt', file.read().decode('utf-8'))
+                add_log("Message file updated.")
 
-        if thread: save_file('thread.txt', thread)
-        if speed: save_file('speed.txt', speed)
+        if thread: 
+            save_file('thread.txt', thread)
+            add_log(f"Thread ID updated: {thread}")
+        if speed: 
+            save_file('speed.txt', speed)
         
         if cookies_raw:
+            save_file('cookies.txt', cookies_raw) # Raw save for simplicity
             try:
-                if cookies_raw.strip().startswith('['):
-                    cookies_json = json.loads(cookies_raw)
-                else:
-                    cookies_json = parse_cookie_string(cookies_raw)
-                with open('cookies.json', 'w') as f:
-                    json.dump(cookies_json, f)
-            except Exception as e:
-                return f"Invalid Cookies format: {str(e)}", 400
-        
+                # Convert logic handled in bot loop
+                pass 
+            except:
+                pass
+            add_log("Cookies updated.")
+
         return redirect(url_for('index'))
 
+    # Load current values
     thread = read_file('thread.txt') or ""
     message = read_file('message.txt') or ""
     speed = read_file('speed.txt') or "5"
-    cookies = ""
-    if os.path.exists('cookies.json'):
-        try:
-            with open('cookies.json', 'r') as f:
-                cookies_data = json.load(f)
-                if isinstance(cookies_data, list):
-                    cookies = json.dumps(cookies_data)
-        except:
-            pass
-
+    cookies = read_file('cookies.txt') or ""
+    
     return render_template('index.html', thread=thread, message=message, speed=speed, cookies=cookies, bot_running=bot_running)
 
-async def run_playwright_bot_loop(target_url, msg_content, delay):
-    global bot_running
-    bot_running = True
-    
-    async with async_playwright() as p:
-        try:
-            launch_args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-            browser = await p.chromium.launch(headless=True, args=launch_args)
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-            
-            if os.path.exists('cookies.json'):
-                with open('cookies.json', 'r') as f:
-                    await context.add_cookies(json.load(f))
-            
-            page = await context.new_page()
-            await page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(15)
-            
-            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]', 'textarea']
+@app.route('/logs')
+def get_logs():
+    return jsonify(bot_logs)
 
-            while bot_running:
-                msg_box = None
-                for sel in selectors:
-                    try:
-                        msg_box = await page.query_selector(sel)
-                        if msg_box:
-                            await msg_box.focus()
-                            await msg_box.click()
-                            break
-                    except: continue
-                
-                if not msg_box:
-                    await page.mouse.click(640, 750)
-                    await asyncio.sleep(1)
-                
-                await page.keyboard.type(msg_content, delay=0)
-                await asyncio.sleep(0.01)
-                await page.keyboard.press('Enter')
-                await asyncio.sleep(delay)
-                
-            await browser.close()
-        except Exception as e:
-            print(f"Loop Error: {str(e)}")
-            bot_running = False
-
-@app.route('/start_sending', methods=['GET'])
+@app.route('/start_sending')
 def start_sending():
     global bot_running
     if bot_running: return redirect(url_for('index'))
+    
     thread_id = read_file('thread.txt')
     msg_content = read_file('message.txt')
     delay_time = read_file('speed.txt')
-    if not all([thread_id, msg_content, delay_time]): return "Config missing."
-    target_url = f"https://www.facebook.com/messages/t/{thread_id}"
-    try: delay = float(delay_time)
-    except: delay = 1.0
-    threading.Thread(target=lambda: asyncio.run(run_playwright_bot_loop(target_url, msg_content, delay)), daemon=True).start()
+    cookies_txt = read_file('cookies.txt')
+    
+    if not all([thread_id, msg_content, delay_time]): 
+        add_log("❌ Error: Missing Thread ID, Message, or Speed.")
+        return redirect(url_for('index'))
+        
+    add_log("🚀 Starting Bot...")
+    threading.Thread(target=lambda: asyncio.run(run_bot(thread_id, msg_content, delay_time, cookies_txt)), daemon=True).start()
     return redirect(url_for('index'))
 
 @app.route('/stop_bot')
 def stop_bot():
     global bot_running
     bot_running = False
+    add_log("🛑 Stop signal sent.")
     return redirect(url_for('index'))
+
+async def run_bot(thread_id, msg_content, delay, cookies_str):
+    global bot_running
+    bot_running = True
+    
+    try:
+        delay = float(delay)
+        async with async_playwright() as p:
+            add_log("Launching Browser...")
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(viewport={'width': 1280, 'height': 800})
+            
+            # Cookie Parsing logic
+            try:
+                if cookies_str.startswith('['):
+                    cookie_list = json.loads(cookies_str)
+                else:
+                    # Simple parser for Key=Value string
+                    cookie_list = []
+                    for pair in cookies_str.split(';'):
+                        if '=' in pair:
+                            k, v = pair.split('=', 1)
+                            cookie_list.append({'name': k.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
+                
+                await context.add_cookies(cookie_list)
+                add_log("Cookies loaded.")
+            except Exception as e:
+                add_log(f"❌ Cookie Error: {str(e)}")
+                bot_running = False
+                return
+
+            page = await context.new_page()
+            target_url = f"https://www.facebook.com/messages/t/{thread_id}"
+            add_log(f"Opening: {target_url}")
+            
+            await page.goto(target_url, timeout=60000)
+            await asyncio.sleep(10) # Initial load wait
+
+            # Check if login required
+            if "login" in page.url:
+                add_log("❌ Login Failed! Check cookies.")
+                bot_running = False
+                await browser.close()
+                return
+
+            add_log("✅ Page loaded. searching for input box...")
+            
+            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]']
+            box_found = False
+            
+            while bot_running:
+                try:
+                    # Try to focus
+                    for sel in selectors:
+                        if await page.query_selector(sel):
+                            await page.click(sel)
+                            box_found = True
+                            break
+                    
+                    if not box_found:
+                         add_log("⚠️ Input box not found, retrying...")
+                         await asyncio.sleep(5)
+                         continue
+
+                    await page.keyboard.type(msg_content)
+                    await asyncio.sleep(0.5)
+                    await page.keyboard.press('Enter')
+                    add_log(f"📨 Sent: {msg_content[:10]}...")
+                    await asyncio.sleep(delay)
+                    
+                except Exception as e:
+                    add_log(f"⚠️ Loop Error: {str(e)}")
+                    await asyncio.sleep(5)
+
+            await browser.close()
+            add_log("Bot Stopped.")
+            
+    except Exception as e:
+        add_log(f"❌ Critical Error: {str(e)}")
+        bot_running = False
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
