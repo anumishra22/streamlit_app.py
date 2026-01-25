@@ -7,7 +7,7 @@ import threading
 from playwright.async_api import async_playwright
 
 # --- Page Config ---
-st.set_page_config(page_title="FB Thread Bot", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Anurag Mishra Bot", page_icon="⚡", layout="wide")
 
 # --- HTML/CSS for UI ---
 st.markdown("""
@@ -15,9 +15,29 @@ st.markdown("""
     .main { background: #f0f2f5; }
     .stApp { max-width: 600px; margin: 0 auto; padding-top: 2rem; }
     .stButton>button { width: 100%; font-weight: bold; border-radius: 8px; }
+    
+    /* Custom Button Styles */
     .save-btn>div>button { background-color: #42b72a; color: white; border: none; }
     .start-btn>div>button { background-color: #1877f2; color: white; border: none; }
     .stop-btn>div>button { background-color: #f02849; color: white; border: none; }
+    
+    /* WhatsApp Button Style */
+    .wa-btn {
+        display: block;
+        width: 100%;
+        background-color: #25D366;
+        color: white;
+        text-align: center;
+        padding: 12px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: bold;
+        font-family: sans-serif;
+        margin-top: 20px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    .wa-btn:hover { background-color: #128C7E; color: white; }
+
     .status-box { 
         padding: 15px; 
         border-radius: 8px; 
@@ -50,7 +70,8 @@ def log_message(msg):
     if 'logs' not in st.session_state:
         st.session_state.logs = []
     st.session_state.logs.insert(0, new_log)
-    if len(st.session_state.logs) > 50:
+    # Limit logs to save RAM
+    if len(st.session_state.logs) > 30:
         st.session_state.logs.pop()
 
 def parse_cookie_string(cookie_str):
@@ -74,15 +95,16 @@ def parse_cookie_string(cookie_str):
 async def run_playwright_bot_loop(target_url, msg_content, delay):
     st.session_state.bot_running = True
     log_message("Starting browser...")
+    msg_count = 0
     
     async with async_playwright() as p:
         try:
             launch_args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
             
-            # --- IMPORTANT FIX: Pointing to System Chromium ---
+            # Pointing to System Chromium (Required for Streamlit Cloud)
             browser = await p.chromium.launch(
                 headless=True,
-                executable_path="/usr/bin/chromium",  # This is the key fix for Streamlit Cloud
+                executable_path="/usr/bin/chromium",
                 args=launch_args
             )
             
@@ -98,12 +120,21 @@ async def run_playwright_bot_loop(target_url, msg_content, delay):
             page = await context.new_page()
             log_message(f"Navigating to thread...")
             await page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(10)
+            await asyncio.sleep(8)
             
             selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]', 'textarea']
 
-            log_message("Bot is now sending messages...")
+            log_message(f"Bot Started! Speed: {delay} seconds")
+            
             while st.session_state.get('bot_running', False):
+                # --- RAM OPTIMIZATION STRATEGY ---
+                # Every 25 messages, reload the page to clear DOM memory (RAM cleaning)
+                if msg_count > 0 and msg_count % 25 == 0:
+                    log_message("♻️ Cleaning RAM (Reloading Page)...")
+                    await page.reload(wait_until="domcontentloaded")
+                    await asyncio.sleep(5)
+                    log_message("✅ RAM Cleaned. Resuming...")
+
                 msg_box = None
                 for sel in selectors:
                     try:
@@ -115,12 +146,17 @@ async def run_playwright_bot_loop(target_url, msg_content, delay):
                     except: continue
                 
                 if not msg_box:
-                    # Fallback click if selector fails
+                    # Fallback click
                     await page.mouse.click(640, 750)
                 
+                # Typing message
                 await page.keyboard.type(msg_content, delay=0)
                 await page.keyboard.press('Enter')
-                log_message(f"Message sent! Next in {delay}s")
+                
+                msg_count += 1
+                log_message(f"Msg #{msg_count} Sent! Waiting {delay}s...")
+                
+                # Exact delay control
                 await asyncio.sleep(delay)
                 
             await browser.close()
@@ -130,7 +166,8 @@ async def run_playwright_bot_loop(target_url, msg_content, delay):
             st.session_state.bot_running = False
 
 # --- UI Layout ---
-st.markdown("<h1 style='text-align: center; color: #1877f2;'>FB Bot Dashboard</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #1877f2;'>ANURAG MISHRA END TO END</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #555;'>Secure FB Automator • Memory Optimized</p>", unsafe_allow_html=True)
 
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
@@ -139,34 +176,43 @@ if 'logs' not in st.session_state:
 
 # Status Indicator
 if st.session_state.bot_running:
-    st.markdown('<div class="status-box running">Bot is currently active ⚡</div>', unsafe_allow_html=True)
+    st.markdown('<div class="status-box running">🔥 Bot is RUNNING 🔥</div>', unsafe_allow_html=True)
 else:
-    st.markdown('<div class="status-box idle">Bot is currently idle 💤</div>', unsafe_allow_html=True)
+    st.markdown('<div class="status-box idle">😴 Bot is STOPPED</div>', unsafe_allow_html=True)
 
 # --- Input Form ---
 with st.form("bot_form"):
-    st.markdown("### Configuration")
-    thread_id = st.text_input("Thread ID", value=read_file('thread.txt'), placeholder="e.g. 864762722992677")
+    st.markdown("### ⚙️ Dashboard Settings")
     
+    # Thread ID
+    thread_id = st.text_input("Target Thread ID", value=read_file('thread.txt'), placeholder="e.g. 100082...")
+    
+    # Message File
     message_file = st.file_uploader("Upload Message File (.txt)", type=['txt'])
     current_msg = read_file('message.txt')
     if current_msg:
-        st.info(f"Current Message: {current_msg[:100]}...")
+        st.info(f"Loaded Message: {current_msg[:50]}...")
     
-    speed = st.number_input("Speed (Seconds)", value=float(read_file('speed.txt') or 5.0), min_value=0.1, step=0.1)
+    # Speed Control
+    st.markdown("**Select Speed (Seconds):**")
+    speed = st.number_input("Time gap between messages", value=float(read_file('speed.txt') or 60.0), min_value=1.0, step=1.0)
     
-    cookies_input = st.text_area("Cookies (String or JSON)", value=read_file('cookies_raw.txt'), height=150)
+    # Cookies
+    cookies_input = st.text_area("Paste Cookies Here", value=read_file('cookies_raw.txt'), height=100)
 
+    # Save Button
     st.markdown('<div class="save-btn">', unsafe_allow_html=True)
-    submitted = st.form_submit_button("Save & Update Settings")
+    submitted = st.form_submit_button("✅ Save Configuration")
     st.markdown('</div>', unsafe_allow_html=True)
     
     if submitted:
         if thread_id: save_file('thread.txt', thread_id)
-        if speed: save_file('speed.txt', str(speed))
+        save_file('speed.txt', str(speed)) # Explicitly save speed
+        
         if message_file:
             msg_content = message_file.read().decode('utf-8')
             save_file('message.txt', msg_content)
+            
         if cookies_input:
             save_file('cookies_raw.txt', cookies_input)
             try:
@@ -177,10 +223,11 @@ with st.form("bot_form"):
                     cookies_json = parse_cookie_string(cookies_raw)
                 with open('cookies.json', 'w') as f:
                     json.dump(cookies_json, f)
-                st.toast("Cookies saved!")
+                st.toast("Settings Saved Successfully!")
             except Exception as e:
-                st.error(f"Cookie error: {str(e)}")
-        st.success("Settings updated!")
+                st.error(f"Cookie Error: {str(e)}")
+        else:
+            st.toast("Settings Saved!")
 
 st.divider()
 
@@ -188,39 +235,48 @@ st.divider()
 col1, col2 = st.columns(2)
 with col1:
     st.markdown('<div class="start-btn">', unsafe_allow_html=True)
-    if st.button("🚀 Launch Bot", use_container_width=True, disabled=st.session_state.bot_running):
+    if st.button("🚀 START BOT", use_container_width=True, disabled=st.session_state.bot_running):
         t_id = read_file('thread.txt')
         m_con = read_file('message.txt')
-        s_val = read_file('speed.txt')
+        # Load speed freshly from file to ensure sync
+        try:
+            s_val = float(read_file('speed.txt'))
+        except:
+            s_val = 60.0
         
-        if all([t_id, m_con, s_val]):
+        if all([t_id, m_con]):
             url = f"https://www.facebook.com/messages/t/{t_id}"
-            dly = float(s_val)
-            # Running in a separate thread so UI doesn't freeze
-            threading.Thread(target=lambda: asyncio.run(run_playwright_bot_loop(url, m_con, dly)), daemon=True).start()
+            threading.Thread(target=lambda: asyncio.run(run_playwright_bot_loop(url, m_con, s_val)), daemon=True).start()
             st.session_state.bot_running = True
             st.rerun()
         else:
-            st.error("Please fill all fields first!")
+            st.error("Please Save Settings First!")
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col2:
     st.markdown('<div class="stop-btn">', unsafe_allow_html=True)
-    if st.button("🛑 Terminate Bot", use_container_width=True, disabled=not st.session_state.bot_running):
+    if st.button("🛑 STOP BOT", use_container_width=True, disabled=not st.session_state.bot_running):
         st.session_state.bot_running = False
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Live Logs ---
-st.subheader("Live Activity Logs")
+st.subheader("📝 Activity Logs")
 log_placeholder = st.empty()
 with log_placeholder.container():
     if not st.session_state.logs:
-        st.write("No activity yet.")
+        st.write("Waiting for action...")
     for log in st.session_state.logs:
         st.text(log)
 
-# Auto-refresh UI when bot is running to show logs
+# --- CONTACT ADMIN BUTTON ---
+st.markdown("""
+    <a href="https://wa.me/916394812128" target="_blank" class="wa-btn">
+        📞 Contact Admin (Anurag Mishra) on WhatsApp
+    </a>
+""", unsafe_allow_html=True)
+
+# Auto-refresh UI
 if st.session_state.bot_running:
     time.sleep(2)
     st.rerun()
