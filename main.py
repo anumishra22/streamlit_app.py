@@ -6,11 +6,12 @@ import threading
 from playwright.async_api import async_playwright
 from werkzeug.utils import secure_filename
 import time
+import random
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 
-# --- Folders Setup ---
+# --- Setup Folders ---
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'])
 if not os.path.exists('static'):
@@ -51,26 +52,21 @@ def index():
             speed = request.form.get('speed')
             cookies_raw = request.form.get('cookies')
             
-            # --- File Upload Fix (Crash Prevention) ---
             if 'message_file' in request.files:
                 file = request.files['message_file']
                 if file and file.filename != '':
                     filename = secure_filename(file.filename)
                     filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'message.txt')
                     file.save(filepath)
-                    
-                    # Safe Read: errors='ignore' prevents 500 Error
                     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        save_file('message.txt', content)
+                        save_file('message.txt', f.read())
                     add_log("Message file updated.")
 
             if thread: save_file('thread.txt', thread)
             if speed: save_file('speed.txt', speed)
             if cookies_raw: save_file('cookies.txt', cookies_raw)
             
-            add_log("✅ Settings Updated Successfully.")
-            
+            add_log("✅ Settings Updated.")
         except Exception as e:
             add_log(f"❌ Update Error: {str(e)}")
 
@@ -91,7 +87,7 @@ def get_logs():
 def view_debug():
     if os.path.exists('static/debug.png'):
         return send_from_directory('static', 'debug.png')
-    return "No debug screenshot available."
+    return "No debug screenshot yet."
 
 @app.route('/start_sending')
 def start_sending():
@@ -104,10 +100,10 @@ def start_sending():
     cookies_txt = read_file('cookies.txt')
     
     if not all([thread_id, msg_content, delay_time]): 
-        add_log("❌ Error: Missing Thread ID, Message, or Speed.")
+        add_log("❌ Error: Missing Details.")
         return redirect(url_for('index'))
         
-    add_log("🚀 Starting Bot...")
+    add_log("🚀 Starting Stealth Bot...")
     threading.Thread(target=lambda: asyncio.run(run_bot(thread_id, msg_content, delay_time, cookies_txt)), daemon=True).start()
     return redirect(url_for('index'))
 
@@ -125,11 +121,26 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
     try:
         delay = float(delay)
         async with async_playwright() as p:
-            add_log("Launching Browser...")
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(viewport={'width': 1280, 'height': 800})
+            add_log("Launching Stealth Browser...")
             
-            # --- Cookie Loading ---
+            # --- STEALTH MODE SETTINGS ---
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-blink-features=AutomationControlled', # Robot detection OFF
+                    '--no-sandbox',
+                    '--disable-infobars',
+                    '--disable-dev-shm-usage',
+                    '--start-maximized'
+                ]
+            )
+            
+            # Asli Computer User-Agent
+            context = await browser.new_context(
+                viewport={'width': 1366, 'height': 768},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            
             if cookies_str:
                 try:
                     if cookies_str.startswith('['):
@@ -140,51 +151,68 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
                             if '=' in pair:
                                 k, v = pair.split('=', 1)
                                 cookie_list.append({'name': k.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
-                    
                     await context.add_cookies(cookie_list)
                     add_log("Cookies loaded.")
-                except Exception as e:
-                    add_log(f"⚠️ Cookie Issue: {str(e)}")
+                except: pass
 
             page = await context.new_page()
             target_url = f"https://www.facebook.com/messages/t/{thread_id}"
-            add_log(f"Opening: {target_url}")
+            add_log(f"Opening Chat...")
             
             await page.goto(target_url, timeout=60000)
             await asyncio.sleep(10)
 
-            # --- Login Check ---
-            if "login" in page.url or "checkpoint" in page.url:
-                add_log("❌ Login Failed! Taking screenshot...")
+            if "login" in page.url:
+                add_log("❌ Cookies Expired! Login page detected.")
                 await page.screenshot(path='static/debug.png')
-                add_log("📸 Check /debug for screenshot")
                 bot_running = False
                 await browser.close()
                 return
 
-            # --- Selectors ---
-            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]']
+            # --- Expanded Selectors List ---
+            selectors = [
+                'div[aria-label="Message"]', 
+                'div[role="textbox"]', 
+                'div[contenteditable="true"]',
+                'div[data-lexical-editor="true"]', # New FB Editor
+                'div[aria-label="Type a message..."]'
+            ]
             
+            retry_count = 0
             while bot_running:
                 box_found = False
                 
-                # --- Anti-Popup: Clear overlays ---
+                # Anti-Popup: Click on blank space & press ESC
                 try:
-                    await page.keyboard.press('Escape') # Popups hatane ke liye
+                    await page.mouse.click(10, 10)
+                    await page.keyboard.press('Escape')
                 except: pass
 
                 for sel in selectors:
                     try:
+                        # Wait for selector (Better than query)
                         if await page.query_selector(sel):
                             await page.click(sel)
                             box_found = True
+                            retry_count = 0
                             break
                     except: continue
                 
                 if not box_found:
-                     add_log(f"⚠️ Box missing, clearing popups...")
-                     await asyncio.sleep(2)
-                     continue # Retry immediately
+                     retry_count += 1
+                     add_log(f"⚠️ Looking for box ({retry_count})...")
+                     
+                     if retry_count % 3 == 0:
+                         await page.screenshot(path='static/debug.png')
+                         add_log("📸 Taking screenshot to check...")
+                     
+                     if retry_count > 10:
+                         add_log("❌ Failed. Check /debug for photo.")
+                         bot_running = False
+                         break
+                         
+                     await asyncio.sleep(3)
+                     continue
 
                 try:
                     await page.keyboard.type(msg_content)
@@ -193,14 +221,14 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
                     add_log(f"📨 Sent: {msg_content[:10]}...")
                     await asyncio.sleep(delay)
                 except Exception as e:
-                    add_log(f"⚠️ Error sending: {str(e)}")
+                    add_log(f"⚠️ Send Error: {str(e)}")
                     await asyncio.sleep(5)
 
             await browser.close()
             add_log("Bot Stopped.")
             
     except Exception as e:
-        add_log(f"❌ Critical Error: {str(e)}")
+        add_log(f"❌ Error: {str(e)}")
         bot_running = False
 
 if __name__ == '__main__':
