@@ -7,7 +7,7 @@ import threading
 from playwright.async_api import async_playwright
 
 # --- Page Config ---
-st.set_page_config(page_title="Anurag Mishra Bot", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="ANURAG MISHRA HERE:)", page_icon="⚡", layout="wide")
 
 # --- HTML/CSS for UI ---
 st.markdown("""
