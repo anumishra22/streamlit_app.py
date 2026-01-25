@@ -9,7 +9,9 @@ import time
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-# Debug screenshots ke liye folder
+# Folders create karein agar nahi hain
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
 if not os.path.exists('static'):
     os.makedirs('static')
 
@@ -25,8 +27,11 @@ def add_log(message):
 
 # --- Helper Functions ---
 def save_file(filename, content):
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(content)
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except Exception as e:
+        add_log(f"❌ Save Error: {str(e)}")
 
 def read_file(filename):
     try:
@@ -40,24 +45,35 @@ def read_file(filename):
 def index():
     global bot_running
     if request.method == 'POST':
-        thread = request.form.get('thread')
-        speed = request.form.get('speed')
-        cookies_raw = request.form.get('cookies')
-        
-        if 'message_file' in request.files:
-            file = request.files['message_file']
-            if file and file.filename != '':
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'message.txt')
-                file.save(filepath)
-                file.seek(0)
-                save_file('message.txt', file.read().decode('utf-8'))
-                add_log("Message file updated.")
+        try:
+            thread = request.form.get('thread')
+            speed = request.form.get('speed')
+            cookies_raw = request.form.get('cookies')
+            
+            # --- File Upload Logic (Fixed Crash Issue) ---
+            if 'message_file' in request.files:
+                file = request.files['message_file']
+                if file and file.filename != '':
+                    filename = secure_filename(file.filename)
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'message.txt')
+                    file.save(filepath)
+                    
+                    # Safe Read: errors='ignore' crash hone se bachayega
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        save_file('message.txt', content)
+                    
+                    add_log("Message file updated.")
 
-        if thread: save_file('thread.txt', thread)
-        if speed: save_file('speed.txt', speed)
-        if cookies_raw: save_file('cookies.txt', cookies_raw)
-        
+            if thread: save_file('thread.txt', thread)
+            if speed: save_file('speed.txt', speed)
+            if cookies_raw: save_file('cookies.txt', cookies_raw)
+            
+            add_log("✅ Settings Updated Successfully.")
+            
+        except Exception as e:
+            add_log(f"❌ Update Error: {str(e)}")
+
         return redirect(url_for('index'))
 
     thread = read_file('thread.txt') or ""
@@ -71,12 +87,11 @@ def index():
 def get_logs():
     return jsonify(bot_logs)
 
-# 📸 DEBUG: Screenshot dekhne ka rasta
 @app.route('/debug')
 def view_debug():
     if os.path.exists('static/debug.png'):
         return send_from_directory('static', 'debug.png')
-    return "No debug screenshot yet. Wait for bot to fail."
+    return "No debug screenshot available."
 
 @app.route('/start_sending')
 def start_sending():
@@ -114,22 +129,21 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(viewport={'width': 1280, 'height': 800})
             
-            try:
-                if cookies_str.startswith('['):
-                    cookie_list = json.loads(cookies_str)
-                else:
-                    cookie_list = []
-                    for pair in cookies_str.split(';'):
-                        if '=' in pair:
-                            k, v = pair.split('=', 1)
-                            cookie_list.append({'name': k.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
-                
-                await context.add_cookies(cookie_list)
-                add_log("Cookies loaded.")
-            except Exception as e:
-                add_log(f"❌ Cookie Error: {str(e)}")
-                bot_running = False
-                return
+            if cookies_str:
+                try:
+                    if cookies_str.startswith('['):
+                        cookie_list = json.loads(cookies_str)
+                    else:
+                        cookie_list = []
+                        for pair in cookies_str.split(';'):
+                            if '=' in pair:
+                                k, v = pair.split('=', 1)
+                                cookie_list.append({'name': k.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
+                    
+                    await context.add_cookies(cookie_list)
+                    add_log("Cookies loaded.")
+                except Exception as e:
+                    add_log(f"⚠️ Cookie Issue: {str(e)}")
 
             page = await context.new_page()
             target_url = f"https://www.facebook.com/messages/t/{thread_id}"
@@ -138,11 +152,10 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             await page.goto(target_url, timeout=60000)
             await asyncio.sleep(10)
 
-            # 📸 Pehla check: Kya login page hai?
             if "login" in page.url or "checkpoint" in page.url:
-                add_log("❌ Login Failed/Checkpoint! Taking screenshot...")
+                add_log("❌ Login Failed! Taking screenshot...")
                 await page.screenshot(path='static/debug.png')
-                add_log("📸 Screenshot saved! Check /debug url")
+                add_log("📸 Check /debug for screenshot")
                 bot_running = False
                 await browser.close()
                 return
@@ -152,37 +165,34 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             retry_count = 0
             while bot_running:
                 box_found = False
-                try:
-                    for sel in selectors:
+                for sel in selectors:
+                    try:
                         if await page.query_selector(sel):
                             await page.click(sel)
                             box_found = True
-                            retry_count = 0 # Reset retry on success
+                            retry_count = 0
                             break
-                    
-                    if not box_found:
-                         retry_count += 1
-                         add_log(f"⚠️ Input box missing ({retry_count}/5)...")
-                         
-                         # Agar 5 baar fail hua to screenshot lo
-                         if retry_count >= 5:
-                             add_log("📸 Taking DEBUG Screenshot...")
-                             await page.screenshot(path='static/debug.png')
-                             add_log("❌ Check screenshot at /debug to see what happened.")
-                             bot_running = False
-                             break
-                             
-                         await asyncio.sleep(5)
-                         continue
+                    except: continue
+                
+                if not box_found:
+                     retry_count += 1
+                     add_log(f"⚠️ Box missing ({retry_count}/5)...")
+                     if retry_count >= 5:
+                         await page.screenshot(path='static/debug.png')
+                         add_log("❌ Failed. Screenshot saved at /debug")
+                         bot_running = False
+                         break
+                     await asyncio.sleep(5)
+                     continue
 
+                try:
                     await page.keyboard.type(msg_content)
                     await asyncio.sleep(0.5)
                     await page.keyboard.press('Enter')
                     add_log(f"📨 Sent: {msg_content[:10]}...")
                     await asyncio.sleep(delay)
-                    
                 except Exception as e:
-                    add_log(f"⚠️ Error: {str(e)}")
+                    add_log(f"⚠️ Error sending: {str(e)}")
                     await asyncio.sleep(5)
 
             await browser.close()
