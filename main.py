@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 import json
 import asyncio
 import os
@@ -9,18 +9,16 @@ import time
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-# Debug screenshots ke liye folder
-if not os.path.exists('static'):
-    os.makedirs('static')
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # --- Global State ---
 bot_running = False
-bot_logs = []
+bot_logs = []  # लाइव लॉग्स यहाँ सेव होंगे
 
 def add_log(message):
     timestamp = time.strftime("%H:%M:%S")
     bot_logs.append(f"[{timestamp}] {message}")
-    if len(bot_logs) > 50:
+    if len(bot_logs) > 50:  # सिर्फ आखिरी 50 लाइन्स रखें
         bot_logs.pop(0)
 
 # --- Helper Functions ---
@@ -44,22 +42,36 @@ def index():
         speed = request.form.get('speed')
         cookies_raw = request.form.get('cookies')
         
+        # Files Handling
         if 'message_file' in request.files:
             file = request.files['message_file']
             if file and file.filename != '':
                 filename = secure_filename(file.filename)
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'message.txt')
                 file.save(filepath)
+                # Sync content
                 file.seek(0)
                 save_file('message.txt', file.read().decode('utf-8'))
                 add_log("Message file updated.")
 
-        if thread: save_file('thread.txt', thread)
-        if speed: save_file('speed.txt', speed)
-        if cookies_raw: save_file('cookies.txt', cookies_raw)
+        if thread: 
+            save_file('thread.txt', thread)
+            add_log(f"Thread ID updated: {thread}")
+        if speed: 
+            save_file('speed.txt', speed)
         
+        if cookies_raw:
+            save_file('cookies.txt', cookies_raw) # Raw save for simplicity
+            try:
+                # Convert logic handled in bot loop
+                pass 
+            except:
+                pass
+            add_log("Cookies updated.")
+
         return redirect(url_for('index'))
 
+    # Load current values
     thread = read_file('thread.txt') or ""
     message = read_file('message.txt') or ""
     speed = read_file('speed.txt') or "5"
@@ -70,13 +82,6 @@ def index():
 @app.route('/logs')
 def get_logs():
     return jsonify(bot_logs)
-
-# 📸 DEBUG: Screenshot dekhne ka rasta
-@app.route('/debug')
-def view_debug():
-    if os.path.exists('static/debug.png'):
-        return send_from_directory('static', 'debug.png')
-    return "No debug screenshot yet. Wait for bot to fail."
 
 @app.route('/start_sending')
 def start_sending():
@@ -114,10 +119,12 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(viewport={'width': 1280, 'height': 800})
             
+            # Cookie Parsing logic
             try:
                 if cookies_str.startswith('['):
                     cookie_list = json.loads(cookies_str)
                 else:
+                    # Simple parser for Key=Value string
                     cookie_list = []
                     for pair in cookies_str.split(';'):
                         if '=' in pair:
@@ -136,42 +143,31 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
             add_log(f"Opening: {target_url}")
             
             await page.goto(target_url, timeout=60000)
-            await asyncio.sleep(10)
+            await asyncio.sleep(10) # Initial load wait
 
-            # 📸 Pehla check: Kya login page hai?
-            if "login" in page.url or "checkpoint" in page.url:
-                add_log("❌ Login Failed/Checkpoint! Taking screenshot...")
-                await page.screenshot(path='static/debug.png')
-                add_log("📸 Screenshot saved! Check /debug url")
+            # Check if login required
+            if "login" in page.url:
+                add_log("❌ Login Failed! Check cookies.")
                 bot_running = False
                 await browser.close()
                 return
 
-            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]']
+            add_log("✅ Page loaded. searching for input box...")
             
-            retry_count = 0
+            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]']
+            box_found = False
+            
             while bot_running:
-                box_found = False
                 try:
+                    # Try to focus
                     for sel in selectors:
                         if await page.query_selector(sel):
                             await page.click(sel)
                             box_found = True
-                            retry_count = 0 # Reset retry on success
                             break
                     
                     if not box_found:
-                         retry_count += 1
-                         add_log(f"⚠️ Input box missing ({retry_count}/5)...")
-                         
-                         # Agar 5 baar fail hua to screenshot lo
-                         if retry_count >= 5:
-                             add_log("📸 Taking DEBUG Screenshot...")
-                             await page.screenshot(path='static/debug.png')
-                             add_log("❌ Check screenshot at /debug to see what happened.")
-                             bot_running = False
-                             break
-                             
+                         add_log("⚠️ Input box not found, retrying...")
                          await asyncio.sleep(5)
                          continue
 
@@ -182,7 +178,7 @@ async def run_bot(thread_id, msg_content, delay, cookies_str):
                     await asyncio.sleep(delay)
                     
                 except Exception as e:
-                    add_log(f"⚠️ Error: {str(e)}")
+                    add_log(f"⚠️ Loop Error: {str(e)}")
                     await asyncio.sleep(5)
 
             await browser.close()
