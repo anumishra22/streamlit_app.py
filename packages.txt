@@ -15,4 +15,3 @@ libcairo2
 libasound2
 chromium
 chromium-driver
-
