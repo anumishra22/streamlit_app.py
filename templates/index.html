@@ -2,61 +2,90 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>FB Thread Bot - Render Ready</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FB Bot Control Panel</title>
     <style>
-        body { font-family: sans-serif; background: #f0f2f5; display: flex; justify-content: center; padding: 20px; }
-        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); width: 100%; max-width: 500px; }
-        h2 { color: #1877f2; text-align: center; }
-        label { display: block; margin-top: 10px; font-weight: bold; }
-        input, textarea { width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
-        .btn-group { margin-top: 20px; display: flex; gap: 10px; }
-        button, .link-btn { flex: 1; padding: 10px; border: none; border-radius: 4px; cursor: pointer; text-align: center; text-decoration: none; font-weight: bold; font-size: 14px; }
-        .save-btn { background: #42b72a; color: white; }
-        .start-btn { background: #1877f2; color: white; }
-        .stop-btn { background: #f02849; color: white; }
-        .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 4px; }
-        .running { background: #e7f3ff; color: #1877f2; }
-        .file-info { font-size: 12px; color: #666; margin-top: 5px; }
+        body { background-color: #0d1117; color: #c9d1d9; font-family: 'Courier New', monospace; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h2 { color: #58a6ff; text-align: center; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
+        
+        .box { background: #161b22; padding: 20px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 20px; }
+        
+        label { display: block; margin-top: 10px; color: #8b949e; font-size: 14px; }
+        input, textarea { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px; border-radius: 4px; box-sizing: border-box; font-family: inherit; }
+        
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; }
+        button, a { flex: 1; padding: 10px; text-align: center; border-radius: 4px; text-decoration: none; color: white; border: none; cursor: pointer; font-weight: bold; }
+        .save-btn { background: #238636; }
+        .start-btn { background: #1f6feb; }
+        .stop-btn { background: #da3633; }
+        
+        /* LOG CONSOLE */
+        #log-window { 
+            background: #000; color: #00ff00; 
+            height: 300px; overflow-y: scroll; 
+            padding: 10px; border: 1px solid #30363d; 
+            font-size: 12px; line-height: 1.4;
+        }
+        .log-entry { margin-bottom: 2px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>FB Bot Dashboard</h2>
-        
-        {% if bot_running %}
-        <div class="status running">Bot is currently active ⚡</div>
-        {% endif %}
+        <h2>🤖 FB Auto-Sender Bot</h2>
 
-        <form method="POST" enctype="multipart/form-data">
-            <label>Thread ID:</label>
-            <input type="text" name="thread" value="{{ thread }}" placeholder="e.g. 864762722992677">
-            
-            <label>Upload Message File (.txt):</label>
-            <input type="file" name="message_file" accept=".txt">
-            <div class="file-info">Current Message: {{ message[:50] }}{% if message|length > 50 %}...{% endif %}</div>
-            
-            <label>Speed (Seconds):</label>
-            <input type="number" step="0.01" name="speed" value="{{ speed }}" placeholder="0.5">
-            
-            <label>Cookies (String or JSON):</label>
-            <textarea name="cookies" rows="5">{{ cookies }}</textarea>
-            
+        <div class="box">
             <div class="btn-group">
-                <button type="submit" class="save-btn">Save & Update</button>
+                {% if not bot_running %}
+                <a href="/start_sending" class="start-btn">▶ START BOT</a>
+                {% else %}
+                <a href="/stop_bot" class="stop-btn">⏹ STOP BOT</a>
+                {% endif %}
             </div>
-        </form>
-
-        <div class="btn-group">
-            {% if not bot_running %}
-            <a href="/start_sending" class="link-btn start-btn">Launch Bot</a>
-            {% else %}
-            <a href="/stop_bot" class="link-btn stop-btn">Terminate Bot</a>
-            {% endif %}
+            <p style="text-align: center; font-size: 12px; margin-top: 5px;">
+                Status: {% if bot_running %}<span style="color: #00ff00;">Running 🟢</span>{% else %}<span style="color: #da3633;">Stopped 🔴</span>{% endif %}
+            </p>
         </div>
-        
-        <div style="margin-top: 20px; font-size: 11px; color: #999; text-align: center;">
-            Render-ready configuration active. Port: auto-detected.
+
+        <div class="box">
+            <label>🖥️ LIVE LOGS:</label>
+            <div id="log-window">Connecting to server...</div>
+        </div>
+
+        <div class="box">
+            <form method="POST" enctype="multipart/form-data">
+                <label>Thread ID (Target):</label>
+                <input type="text" name="thread" value="{{ thread }}">
+                
+                <label>Message File (.txt):</label>
+                <input type="file" name="message_file">
+                <div style="font-size: 10px; color: #666;">Current: {{ message[:50] }}</div>
+
+                <label>Speed (Seconds):</label>
+                <input type="text" name="speed" value="{{ speed }}">
+
+                <label>Cookies (Netscape/JSON):</label>
+                <textarea name="cookies" rows="3">{{ cookies }}</textarea>
+
+                <button type="submit" class="save-btn" style="width: 100%; margin-top: 10px;">💾 UPDATE SETTINGS</button>
+            </form>
         </div>
     </div>
+
+    <script>
+        // Auto-scroll Logs
+        function fetchLogs() {
+            fetch('/logs')
+                .then(response => response.json())
+                .then(data => {
+                    const logWindow = document.getElementById('log-window');
+                    logWindow.innerHTML = data.map(line => `<div class="log-entry">${line}</div>`).join('');
+                    logWindow.scrollTop = logWindow.scrollHeight; // Auto scroll to bottom
+                });
+        }
+        // Refresh logs every 2 seconds
+        setInterval(fetchLogs, 2000);
+        fetchLogs();
+    </script>
 </body>
 </html>
