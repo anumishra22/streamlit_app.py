@@ -18,6 +18,7 @@ st.markdown("""
     .status-box { padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 20px; }
     .running { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
     .stopped { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .log-box { background: #000; color: #0f0; padding: 10px; border-radius: 5px; font-family: monospace; height: 200px; overflow-y: scroll; font-size: 12px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -44,25 +45,34 @@ def write_file(filepath, content):
 
 def append_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
+    log_entry = f"[{timestamp}] {msg}\n"
     with open(FILES['logs'], 'a', encoding='utf-8') as f:
-        f.write(f"[{timestamp}] {msg}\n")
+        f.write(log_entry)
+    # Keep logs manageable
+    try:
+        with open(FILES['logs'], 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        if len(lines) > 50:
+            with open(FILES['logs'], 'w', encoding='utf-8') as f:
+                f.writelines(lines[-50:])
+    except: pass
 
 def get_logs():
     if os.path.exists(FILES['logs']):
         with open(FILES['logs'], 'r', encoding='utf-8') as f:
             return f.read()
-    return "Logs will appear here..."
+    return "No logs yet..."
 
-# --- SMART COOKIE PARSER (Ye hai naya magic) ---
+# --- NEW: SMART COOKIE PARSER ---
 def parse_and_save_cookies(raw_data):
     try:
-        # 1. Try JSON directly
+        # 1. Try treating it as JSON first
         json_data = json.loads(raw_data)
-        if isinstance(json_data, dict): # If single object, wrap in list
-            json_data = [json_data]
+        if isinstance(json_data, dict):
+            json_data = [json_data] # Wrap single dict in list
         return json_data
     except:
-        # 2. If JSON fails, try parsing "name=value; name=value" string
+        # 2. If JSON fails, try parsing "key=value; key2=value2" string
         cookies = []
         for pair in raw_data.split(';'):
             if '=' in pair:
@@ -85,15 +95,14 @@ async def run_bot():
     msg_content = read_file(FILES['message'])
     
     if not thread_id or not msg_content:
-        append_log("❌ Data missing!")
+        append_log("❌ Error: Thread ID or Message missing!")
         write_file(FILES['status'], "stopped")
         return
 
-    append_log(f"🚀 Starting Browser...")
+    append_log(f"🚀 Launching Browser...")
     
     async with async_playwright() as p:
         try:
-            # Browser Launch
             browser = await p.chromium.launch(
                 headless=True,
                 executable_path="/usr/bin/chromium",
@@ -101,54 +110,75 @@ async def run_bot():
             )
             context = await browser.new_context(viewport={'width': 1280, 'height': 800})
             
-            # Load Cookies
+            # Load Cookies Safely
             if os.path.exists(FILES['cookies']):
                 try:
                     with open(FILES['cookies'], 'r') as f:
-                        cookies = json.load(f)
-                        await context.add_cookies(cookies)
-                        append_log(f"🍪 Loaded {len(cookies)} Cookies")
-                except Exception as e: 
-                    append_log(f"⚠️ Cookie Error: {e}")
+                        cookies_data = json.load(f)
+                        if cookies_data:
+                            await context.add_cookies(cookies_data)
+                            append_log(f"🍪 Loaded {len(cookies_data)} Cookies")
+                except Exception as e:
+                    append_log(f"⚠️ Cookie Warning: {e}")
             
             page = await context.new_page()
+            url_target = f"https://www.facebook.com/messages/t/{thread_id}"
             try:
-                await page.goto(f"https://www.facebook.com/messages/t/{thread_id}", timeout=60000)
+                await page.goto(url_target, timeout=60000)
             except:
-                append_log("⚠️ Page timeout, but retrying...")
-            
-            append_log("✅ Checking Login...")
+                append_log("⚠️ Timeout loading page (Continuing...)")
+
+            append_log("✅ Page Loaded. Starting loop...")
             await asyncio.sleep(5)
 
             msg_count = 0
             
             while read_file(FILES['status']) == "running":
-                # Get dynamic speed
-                try: speed = float(read_file(FILES['speed']) or 60)
-                except: speed = 60.0
-
-                # Type & Send
+                # 1. Dynamic Speed
+                try: current_speed = float(read_file(FILES['speed']) or 60)
+                except: current_speed = 60.0
+                
+                # 2. Find & Click Box
+                box_found = False
                 try:
                     await page.click('div[aria-label="Message"]', timeout=3000)
-                    await page.keyboard.type(msg_content)
-                    await page.keyboard.press('Enter')
-                    msg_count += 1
-                    append_log(f"📨 Msg #{msg_count} Sent! Waiting {int(speed)}s")
+                    box_found = True
                 except:
-                    # Fallback click
-                    try: await page.mouse.click(640, 750)
+                    try: 
+                        await page.mouse.click(640, 750) # Coordinate fallback
+                        box_found = True
                     except: pass
                 
-                # Smart Wait (Checks stop every second)
-                for _ in range(int(speed)):
-                    if read_file(FILES['status']) != "running": break
+                # 3. Type & Send
+                if box_found:
+                    try:
+                        await page.keyboard.type(msg_content, delay=0)
+                        await page.keyboard.press('Enter')
+                        msg_count += 1
+                        append_log(f"📨 Msg #{msg_count} Sent! Waiting {int(current_speed)}s...")
+                    except Exception as e:
+                        append_log(f"⚠️ Send Error: {e}")
+                else:
+                    append_log("⚠️ Message box not found, retrying...")
+
+                # 4. RAM Cleaner
+                if msg_count > 0 and msg_count % 25 == 0:
+                    append_log("♻️ Reloading to clean RAM...")
+                    await page.reload()
+                    await asyncio.sleep(5)
+
+                # 5. Smart Wait (Check Stop Signal every second)
+                for _ in range(int(current_speed)):
+                    if read_file(FILES['status']) != "running":
+                        append_log("🛑 Stop Signal Received!")
+                        break
                     await asyncio.sleep(1)
-            
+                
             await browser.close()
-            append_log("🛑 Browser Closed.")
+            append_log("🔒 Browser Closed.")
             
         except Exception as e:
-            append_log(f"❌ Error: {e}")
+            append_log(f"❌ Critical Error: {str(e)}")
             write_file(FILES['status'], "stopped")
 
 def start_thread():
@@ -156,56 +186,73 @@ def start_thread():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(run_bot())
 
-# --- UI ---
-st.title("🔊 SUN LO BOT V3 (Auto-Cookie)")
+# --- UI Layout ---
+st.markdown("<h1 style='text-align: center;'>🔊 SUN LO BOT (Cookie Fix)</h1>", unsafe_allow_html=True)
 
-# Sidebar
+# Sidebar for Controls
 with st.sidebar:
-    st.header("Settings")
+    st.header("⚙️ Settings")
     t_id = st.text_input("Thread ID", value=read_file(FILES['thread']))
-    if st.button("Save ID"): write_file(FILES['thread'], t_id)
+    if st.button("Save Thread ID"): write_file(FILES['thread'], t_id)
     
-    sp = st.number_input("Speed (Sec)", min_value=1, value=int(float(read_file(FILES['speed']) or 60)))
-    if st.button("Update Speed"): write_file(FILES['speed'], sp); st.success("Updated!")
-    
-    msg = st.text_input("Message", value=read_file(FILES['message']))
-    if st.button("Save Msg"): write_file(FILES['message'], msg)
-    
-    # --- FIXED COOKIE SECTION ---
-    cookies_raw = st.text_area("Paste Cookies (JSON or Raw Text)", value=read_file(FILES['cookies_raw']), height=150)
-    if st.button("Save & Fix Cookies"):
-        write_file(FILES['cookies_raw'], cookies_raw)
+    sp = st.number_input("Speed (Seconds)", min_value=1, value=int(float(read_file(FILES['speed']) or 60)))
+    if st.button("Update Speed"): 
+        write_file(FILES['speed'], str(sp))
+        st.success("Speed Updated!")
+        
+    m_file = st.file_uploader("Message File", type=['txt'])
+    if m_file:
+        write_file(FILES['message'], m_file.read().decode('utf-8'))
+        st.success("Message Saved!")
+
+    # --- UPDATED COOKIE SECTION ---
+    c_raw = st.text_area("Paste Cookies (JSON or Raw Text)", value=read_file(FILES['cookies_raw']), height=150)
+    if st.button("Save & Process Cookies"):
+        write_file(FILES['cookies_raw'], c_raw)
         
         # Auto-convert logic
-        final_cookies = parse_and_save_cookies(cookies_raw)
+        final_cookies = parse_and_save_cookies(c_raw)
         
         if final_cookies and len(final_cookies) > 0:
             with open(FILES['cookies'], 'w') as f:
                 json.dump(final_cookies, f)
-            st.success(f"✅ Success! {len(final_cookies)} Cookies saved.")
+            st.success(f"✅ Valid! {len(final_cookies)} cookies saved.")
         else:
-            st.warning("⚠️ Could not detect valid cookies. Check format.")
+            st.warning("⚠️ Could not detect cookies. Check format.")
 
-# Main
-status = read_file(FILES['status'])
-if status == "running":
-    st.markdown('<div class="status-box running">🔥 RUNNING</div>', unsafe_allow_html=True)
+# Main Dashboard
+current_status = read_file(FILES['status'])
+
+if current_status == "running":
+    st.markdown('<div class="status-box running">🔥 BOT IS RUNNING</div>', unsafe_allow_html=True)
 else:
-    st.markdown('<div class="status-box stopped">⛔ STOPPED</div>', unsafe_allow_html=True)
+    st.markdown('<div class="status-box stopped">⛔ BOT IS STOPPED</div>', unsafe_allow_html=True)
 
-c1, c2 = st.columns(2)
-if c1.button("🚀 START"):
-    write_file(FILES['status'], "running")
-    with open(FILES['logs'], 'w') as f: f.write("Starting...\n")
-    threading.Thread(target=start_thread, daemon=True).start()
-    st.rerun()
-    
-if c2.button("🛑 STOP"):
-    write_file(FILES['status'], "stopped")
-    st.rerun()
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🚀 START BOT", use_container_width=True):
+        if current_status != "running":
+            write_file(FILES['status'], "running")
+            clear_logs()
+            threading.Thread(target=start_thread, daemon=True).start()
+            st.rerun()
 
-st.code(get_logs(), language='text')
+with col2:
+    if st.button("🛑 STOP BOT", use_container_width=True):
+        write_file(FILES['status'], "stopped")
+        st.rerun()
 
-if status == "running":
+st.subheader("📝 Live Logs")
+log_placeholder = st.empty()
+
+# Create files if not exist
+for f in FILES.values():
+    if not os.path.exists(f):
+        with open(f, 'w') as file: pass
+
+# Live Log Updater
+log_placeholder.code(get_logs())
+
+if current_status == "running":
     time.sleep(2)
     st.rerun()
