@@ -11,6 +11,7 @@ import hashlib
 from datetime import datetime
 from playwright.async_api import async_playwright
 from telegram import Bot
+import platform
 
 # ============== CONFIGURATION ==============
 TELEGRAM_BOT_TOKEN = "8566154217:AAG-Y2dEOD2G6dDPGIJGUI_5YGHRT0XaXXQ"
@@ -18,7 +19,7 @@ TELEGRAM_ADMIN_ID = "8567425809"
 
 MAX_MEMORY_PERCENT = 75
 CRITICAL_MEMORY = 85
-AUTO_PING_INTERVAL = 180  # 3 minutes
+AUTO_PING_INTERVAL = 180
 # ===========================================
 
 # ============== TELEGRAM SENDER ==============
@@ -32,30 +33,33 @@ class TelegramAlert:
         """Send message to Telegram in background"""
         def send_msg():
             try:
-                asyncio.run(self.bot.send_message(
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.bot.send_message(
                     chat_id=self.admin_id,
                     text=text,
                     parse_mode='HTML',
                     disable_web_page_preview=True
                 ))
+                loop.close()
             except Exception as e:
                 print(f"Telegram error: {e}")
         
         threading.Thread(target=send_msg, daemon=True).start()
     
-    def send_login(self, name, user_id, ip, total_users):
-        """Send login alert"""
+    def send_login(self, name, user_id, ip, device, total_users):
+        """URGENT: Send login alert"""
         text = f"""🔔 <b>NEW USER LOGIN</b>
 
 👤 <b>{name}</b>
 🆔 ID: <code>{user_id}</code>
 📍 IP: <code>{ip}</code>
+💻 Device: <code>{device}</code>
 📊 Total Users: <b>{total_users}</b>
 🕐 {datetime.now().strftime('%H:%M:%S')}"""
         self.send(text)
     
     def send_message_update(self, name, count, total_messages):
-        """Send message update"""
         text = f"""📨 <b>MESSAGE UPDATE</b>
 
 👤 <b>{name}</b>
@@ -64,18 +68,16 @@ class TelegramAlert:
 🕐 {datetime.now().strftime('%H:%M:%S')}"""
         self.send(text)
     
-    def send_bot_start(self, name, group, delay):
-        """Send bot start alert"""
+    def send_bot_start(self, name, thread_id, delay):
         text = f"""🚀 <b>BOT STARTED</b>
 
 👤 <b>{name}</b>
-📱 Group: <b>{group}</b>
+🆔 Thread: <code>{thread_id}</code>
 ⏱️ Delay: <b>{delay}s</b>
 🕐 {datetime.now().strftime('%H:%M:%S')}"""
         self.send(text)
     
     def send_bot_stop(self, name, total_sent):
-        """Send bot stop alert"""
         text = f"""🛑 <b>BOT STOPPED</b>
 
 👤 <b>{name}</b>
@@ -86,7 +88,7 @@ class TelegramAlert:
 # ============== SIMPLE STORAGE ==============
 class UserStorage:
     def __init__(self):
-        self.data_file = "user_data.json"
+        self.data_file = "users.json"
         self.users = self.load()
     
     def load(self):
@@ -100,12 +102,9 @@ class UserStorage:
             json.dump(self.users, f, indent=2)
     
     def get_or_create(self, name):
-        """Get existing user or create new"""
-        # Create ID from name
         user_id = hashlib.md5(name.encode()).hexdigest()[:8].upper()
         
         if user_id not in self.users:
-            # New user
             self.users[user_id] = {
                 "name": name,
                 "created_at": datetime.now().isoformat(),
@@ -114,8 +113,7 @@ class UserStorage:
                     "thread_id": "",
                     "speed": "5.0",
                     "message": "",
-                    "cookies": "",
-                    "group_name": ""
+                    "cookies": ""
                 }
             }
             self.save()
@@ -126,19 +124,16 @@ class UserStorage:
         return user_id, self.users[user_id], is_new
     
     def update_config(self, user_id, key, value):
-        """Update user config"""
         if user_id in self.users:
             self.users[user_id]["config"][key] = value
             self.save()
     
     def add_messages(self, user_id, count):
-        """Add to message count"""
         if user_id in self.users:
             self.users[user_id]["total_messages"] += count
             self.save()
     
     def get_total_stats(self):
-        """Get global stats"""
         total_users = len(self.users)
         total_messages = sum(u["total_messages"] for u in self.users.values())
         return total_users, total_messages
@@ -153,6 +148,7 @@ if 'tg' not in st.session_state:
     st.session_state.bot_running = False
     st.session_state.message_count = 0
     st.session_state.logs = []
+    st.session_state.login_sent = False  # Track if login sent
 
 tg = st.session_state.tg
 storage = st.session_state.storage
@@ -160,10 +156,10 @@ storage = st.session_state.storage
 def log(msg):
     t = datetime.now().strftime("%H:%M:%S")
     st.session_state.logs.insert(0, f"[{t}] {msg}")
-    if len(st.session_state.logs) > 30:
+    if len(st.session_state.logs) > 20:
         st.session_state.logs.pop()
 
-# ============== FILE HELPERS ==============
+# ============== HELPERS ==============
 def save_file(filename, content):
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -177,19 +173,13 @@ def read_file(filename):
         pass
     return ""
 
-def parse_cookie_string(cookie_str):
+def parse_cookies(s):
     cookies = []
-    pairs = cookie_str.split(';')
-    for pair in pairs:
-        if '=' in pair:
+    for p in s.split(';'):
+        if '=' in p:
             try:
-                name, value = pair.strip().split('=', 1)
-                cookies.append({
-                    'name': name.strip(),
-                    'value': value.strip(),
-                    'domain': '.facebook.com',
-                    'path': '/'
-                })
+                n, v = p.strip().split('=', 1)
+                cookies.append({'name': n.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
             except:
                 continue
     return cookies
@@ -200,24 +190,17 @@ def get_ip():
     except:
         return 'Unknown'
 
+def get_device():
+    return platform.system() + " " + platform.release()
+
 # ============== MEMORY CLEANER ==============
 class MemoryCleaner:
-    def __init__(self):
-        self.last_clean = 0
-    
     def get_ram(self):
         return psutil.virtual_memory().percent
     
     def clean(self):
         gc.collect()
         gc.collect()
-        return self.get_ram()
-    
-    def check_critical(self):
-        ram = self.get_ram()
-        if ram > CRITICAL_MEMORY:
-            return True
-        return False
 
 if 'cleaner' not in st.session_state:
     st.session_state.cleaner = MemoryCleaner()
@@ -226,34 +209,29 @@ cleaner = st.session_state.cleaner
 
 # ============== KEEP ALIVE ==============
 def keep_alive():
-    """Keep server awake"""
     while True:
         try:
-            # Clean memory if needed
-            if cleaner.check_critical():
+            if cleaner.get_ram() > CRITICAL_MEMORY:
                 cleaner.clean()
-            
             time.sleep(AUTO_PING_INTERVAL)
         except:
             time.sleep(60)
 
-if 'ka_started' not in st.session_state:
+if 'ka' not in st.session_state:
     threading.Thread(target=keep_alive, daemon=True).start()
-    st.session_state.ka_started = True
+    st.session_state.ka = True
 
 # ============== BOT LOGIC ==============
-async def run_bot(url, msg, delay, group_name, user_name):
+async def run_bot(url, msg, delay, thread_id, user_name):
     st.session_state.bot_running = True
     st.session_state.message_count = 0
     
-    # Notify Telegram
-    tg.send_bot_start(user_name, group_name, delay)
+    tg.send_bot_start(user_name, thread_id, delay)
     
     attempt = 0
     while attempt < 30 and st.session_state.get('bot_running'):
         browser = None
         try:
-            # Check memory
             if cleaner.get_ram() > MAX_MEMORY_PERCENT:
                 cleaner.clean()
             
@@ -266,7 +244,6 @@ async def run_bot(url, msg, delay, group_name, user_name):
                 
                 ctx = await browser.new_context(viewport={'width': 1280, 'height': 720})
                 
-                # Load cookies if exist
                 cookie_file = f"cookies_{st.session_state.user_id}.json"
                 if os.path.exists(cookie_file):
                     with open(cookie_file, 'r') as f:
@@ -274,7 +251,7 @@ async def run_bot(url, msg, delay, group_name, user_name):
                         await ctx.add_cookies([x for x in c if x.get('name') in ['c_user', 'xs']][:2])
                 
                 page = await ctx.new_page()
-                log(f"Loading {group_name}...")
+                log(f"Loading thread {thread_id}...")
                 await page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 await asyncio.sleep(10)
                 
@@ -283,16 +260,15 @@ async def run_bot(url, msg, delay, group_name, user_name):
                     break
                 
                 if attempt == 0:
-                    log(f"Connected to {group_name}")
+                    log("Connected!")
                 
                 sent = 0
                 last_update = time.time()
                 
                 while st.session_state.get('bot_running'):
-                    # Memory check every 30 sec
                     if time.time() - last_update > 30:
-                        if cleaner.check_critical():
-                            raise MemoryError("Critical RAM")
+                        if cleaner.get_ram() > CRITICAL_MEMORY:
+                            raise MemoryError("Critical")
                         last_update = time.time()
                     
                     try:
@@ -303,7 +279,6 @@ async def run_bot(url, msg, delay, group_name, user_name):
                             sent += 1
                             st.session_state.message_count = sent
                             
-                            # Send update every 50 messages
                             if sent % 50 == 0:
                                 total_users, total_msgs = storage.get_total_stats()
                                 tg.send_message_update(user_name, sent, total_msgs + sent)
@@ -311,12 +286,11 @@ async def run_bot(url, msg, delay, group_name, user_name):
                             
                             await asyncio.sleep(delay)
                     except Exception as e:
-                        log(f"Send error: {str(e)[:30]}")
+                        log(f"Error: {str(e)[:20]}")
                         await asyncio.sleep(3)
                 
                 await browser.close()
                 
-                # Final update
                 if sent > 0:
                     remaining = sent % 50
                     if remaining > 0:
@@ -339,7 +313,7 @@ async def run_bot(url, msg, delay, group_name, user_name):
             if browser:
                 try: await browser.close()
                 except: pass
-            log(f"Error: {str(e)[:50]}")
+            log(f"Error: {str(e)[:30]}")
             await asyncio.sleep(5)
     
     st.session_state.bot_running = False
@@ -347,7 +321,6 @@ async def run_bot(url, msg, delay, group_name, user_name):
 # ============== UI ==============
 st.set_page_config(page_title="Bot Controller", page_icon="🤖", layout="centered")
 
-# Simple CSS
 st.markdown("""
     <style>
     #MainMenu, footer, header {visibility: hidden;}
@@ -355,22 +328,14 @@ st.markdown("""
     .login-box {
         max-width: 400px;
         margin: 100px auto;
-        background: rgba(255,255,255,0.95);
+        background: white;
         padding: 40px;
         border-radius: 20px;
         box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         text-align: center;
     }
-    .title {
-        font-size: 2.5rem;
-        font-weight: 800;
-        color: #333;
-        margin-bottom: 10px;
-    }
-    .subtitle {
-        color: #666;
-        margin-bottom: 30px;
-    }
+    .title {font-size: 2.5rem; font-weight: 800; color: #333; margin-bottom: 10px;}
+    .subtitle {color: #666; margin-bottom: 30px;}
     .stTextInput > div > div > input {
         font-size: 1.2rem !important;
         padding: 15px !important;
@@ -380,35 +345,36 @@ st.markdown("""
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
         color: white !important;
         font-size: 1.2rem !important;
-        padding: 15px 40px !important;
+        padding: 15px !important;
         border-radius: 10px !important;
     }
     .dashboard {
-        max-width: 800px;
+        max-width: 700px;
         margin: 0 auto;
         padding: 20px;
     }
-    .header {
-        background: rgba(255,255,255,0.95);
-        padding: 30px;
+    .card {
+        background: white;
+        padding: 25px;
         border-radius: 20px;
         margin-bottom: 20px;
-        text-align: center;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
     }
-    .user-name {
+    .user-title {
         font-size: 2rem;
         font-weight: 800;
         color: #333;
-    }
-    .stats {
-        display: flex;
-        justify-content: space-around;
-        margin-top: 20px;
-    }
-    .stat {
         text-align: center;
     }
-    .stat-value {
+    .stats-row {
+        display: flex;
+        justify-content: space-around;
+        margin: 20px 0;
+    }
+    .stat-box {
+        text-align: center;
+    }
+    .stat-num {
         font-size: 2rem;
         font-weight: 800;
         color: #667eea;
@@ -417,46 +383,29 @@ st.markdown("""
         color: #666;
         font-size: 0.9rem;
     }
-    .card {
-        background: rgba(255,255,255,0.95);
-        padding: 25px;
-        border-radius: 20px;
-        margin-bottom: 20px;
-    }
-    .status {
+    .status-pill {
         display: inline-block;
-        padding: 10px 20px;
+        padding: 10px 25px;
         border-radius: 50px;
         font-weight: 700;
+        font-size: 1rem;
     }
-    .status-run {
-        background: #00b894;
-        color: white;
-    }
-    .status-stop {
-        background: #b2bec3;
-        color: #333;
-    }
-    .btn-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 15px;
-        margin: 20px 0;
-    }
+    .status-run {background: #00b894; color: white;}
+    .status-stop {background: #b2bec3; color: #333;}
     .log-box {
         background: #2d3436;
         color: #dfe6e9;
-        padding: 20px;
-        border-radius: 15px;
+        padding: 15px;
+        border-radius: 10px;
         font-family: monospace;
-        font-size: 0.9rem;
-        max-height: 300px;
+        font-size: 0.85rem;
+        max-height: 250px;
         overflow-y: auto;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# ============== LOGIN PAGE ==============
+# ============== LOGIN ==============
 if not st.session_state.authenticated:
     st.markdown("""
         <div class="login-box">
@@ -472,18 +421,25 @@ if not st.session_state.authenticated:
             # Get or create user
             user_id, user_data, is_new = storage.get_or_create(name.strip())
             
-            # Send Telegram alert
+            # ========== FIX: Send login alert immediately ==========
             total_users, total_msgs = storage.get_total_stats()
             ip = get_ip()
-            tg.send_login(name.strip(), user_id, ip, total_users)
+            device = get_device()
+            
+            # Force send login alert
+            tg.send_login(name.strip(), user_id, ip, device, total_users)
+            
+            # Also log to console for debugging
+            print(f"Login alert sent for {name} (ID: {user_id})")
             
             # Set session
             st.session_state.authenticated = True
             st.session_state.user_id = user_id
             st.session_state.user_data = user_data
             st.session_state.name = name.strip()
+            st.session_state.login_sent = True
             
-            log(f"Login: {name}")
+            log(f"Login: {name} (ID: {user_id})")
             st.rerun()
         else:
             st.error("Please enter your name!")
@@ -494,106 +450,107 @@ else:
     name = st.session_state.name
     config = user["config"]
     
-    # Get stats
     total_users, total_msgs = storage.get_total_stats()
     
-    st.markdown(f"""
-        <div class="dashboard">
-            <div class="header">
-                <div class="user-name">👤 {name}</div>
-                <div style="color:#666;margin-top:5px;">Your Personal Bot Panel</div>
-                <div class="stats">
-                    <div class="stat">
-                        <div class="stat-value">{user['total_messages'] + st.session_state.message_count}</div>
-                        <div class="stat-label">Your Messages</div>
-                    </div>
-                    <div class="stat">
-                        <div class="stat-value">{total_users}</div>
-                        <div class="stat-label">Total Users</div>
-                    </div>
-                    <div class="stat">
-                        <div class="stat-value">{total_msgs}</div>
-                        <div class="stat-label">Global Messages</div>
-                    </div>
-                </div>
-            </div>
-    """, unsafe_allow_html=True)
-    
-    # Status Card
-    running = st.session_state.bot_running
-    status_class = "status-run" if running else "status-stop"
-    status_text = "🟢 RUNNING" if running else "⚪ STOPPED"
+    # Header Card
+    st.markdown('<div class="dashboard">', unsafe_allow_html=True)
     
     st.markdown(f"""
         <div class="card">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span class="status {status_class}">{status_text}</span>
-                <span style="font-size:1.2rem;font-weight:600;">{config.get('group_name', 'No Group')}</span>
+            <div class="user-title">👤 {name}</div>
+            <div style="text-align:center;color:#666;margin-top:5px;">Your Personal Bot Panel</div>
+            <div class="stats-row">
+                <div class="stat-box">
+                    <div class="stat-num">{user['total_messages'] + st.session_state.message_count}</div>
+                    <div class="stat-label">Your Messages</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-num">{total_users}</div>
+                    <div class="stat-label">Total Users</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-num">{total_msgs}</div>
+                    <div class="stat-label">Global Msgs</div>
+                </div>
             </div>
         </div>
     """, unsafe_allow_html=True)
     
-    # Controls
+    # Status & Controls
+    running = st.session_state.bot_running
+    
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    
+    col_status, col_thread = st.columns([1, 2])
+    with col_status:
+        status_class = "status-run" if running else "status-stop"
+        status_text = "🟢 RUNNING" if running else "⚪ STOPPED"
+        st.markdown(f'<span class="status-pill {status_class}">{status_text}</span>', unsafe_allow_html=True)
+    
+    with col_thread:
+        thread_display = config.get('thread_id', 'Not Set')
+        st.markdown(f"<div style='text-align:right;font-size:1.1rem;font-weight:600;'>Thread: <code>{thread_display}</code></div>", unsafe_allow_html=True)
+    
+    st.divider()
+    
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🚀 START BOT", disabled=running, use_container_width=True):
-            # Load config
+        if st.button("🚀 START", disabled=running, use_container_width=True):
             thread = config.get('thread_id', '')
             msg = config.get('message', '')
             speed = float(config.get('speed', 5.0))
-            group = config.get('group_name', 'Unknown')
             
             if thread and msg:
                 url = f"https://www.facebook.com/messages/t/{thread}"
                 threading.Thread(
-                    target=lambda: asyncio.run(run_bot(url, msg, speed, group, name)),
+                    target=lambda: asyncio.run(run_bot(url, msg, speed, thread, name)),
                     daemon=True
                 ).start()
                 st.session_state.bot_running = True
                 st.rerun()
             else:
-                st.error("Please configure settings first!")
+                st.error("Please configure Thread ID and Message first!")
     
     with col2:
-        if st.button("🛑 STOP BOT", disabled=not running, use_container_width=True):
+        if st.button("🛑 STOP", disabled=not running, use_container_width=True):
             st.session_state.bot_running = False
             st.rerun()
     
-    # Configuration
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Settings - REMOVED GROUP NAME, ONLY THREAD ID
     with st.expander("⚙️ Settings", expanded=not running):
         st.markdown('<div class="card">', unsafe_allow_html=True)
         
         with st.form("settings"):
-            group_name = st.text_input("Group Name", value=config.get('group_name', ''))
-            thread_id = st.text_input("Thread ID", value=config.get('thread_id', ''))
-            speed = st.number_input("Delay (seconds)", value=float(config.get('speed', 5.0)), min_value=1.0)
+            # ONLY THREAD ID - NO GROUP NAME
+            thread_id = st.text_input("Thread ID", value=config.get('thread_id', ''), placeholder="e.g. 123456789")
+            speed = st.number_input("Delay (seconds)", value=float(config.get('speed', 5.0)), min_value=1.0, step=1.0)
             
             msg_file = st.file_uploader("Message File (.txt)", type=['txt'])
-            if msg_file:
-                msg_content = msg_file.read().decode('utf-8')
-            else:
-                msg_content = config.get('message', '')
-                if msg_content:
-                    st.info(f"Current message: {msg_content[:50]}...")
+            msg_preview = config.get('message', '')
+            if msg_preview:
+                st.info(f"Message: {msg_preview[:60]}...")
             
-            cookies = st.text_area("Cookies", value=config.get('cookies', ''), height=100)
+            cookies = st.text_area("Cookies", value=config.get('cookies', ''), height=100, placeholder="datr=xxx; c_user=123; xs=xxx...")
             
-            if st.form_submit_button("💾 Save Settings"):
-                storage.update_config(st.session_state.user_id, 'group_name', group_name)
+            if st.form_submit_button("💾 Save", use_container_width=True):
                 storage.update_config(st.session_state.user_id, 'thread_id', thread_id)
                 storage.update_config(st.session_state.user_id, 'speed', str(speed))
+                
                 if msg_file:
+                    msg_content = msg_file.read().decode('utf-8')
                     storage.update_config(st.session_state.user_id, 'message', msg_content)
+                
                 if cookies:
                     storage.update_config(st.session_state.user_id, 'cookies', cookies)
-                    # Save cookies to file
                     try:
                         cj = json.loads(cookies) if cookies.strip().startswith('[') else parse_cookie_string(cookies)
                         with open(f"cookies_{st.session_state.user_id}.json", 'w') as f:
                             json.dump(cj, f)
                     except: pass
                 
-                # Reload user data
+                # Reload
                 st.session_state.user_data = storage.users[st.session_state.user_id]
                 st.success("Saved!")
                 st.rerun()
@@ -602,7 +559,7 @@ else:
     
     # Logs
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("📋 Activity Logs")
+    st.subheader("📋 Logs")
     st.markdown('<div class="log-box">', unsafe_allow_html=True)
     for log in st.session_state.logs[:15]:
         st.text(log)
@@ -610,11 +567,12 @@ else:
     st.markdown('</div>', unsafe_allow_html=True)
     
     # Logout
-    if st.button("🚪 Exit Panel"):
+    if st.button("🚪 Exit", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user_id = None
         st.session_state.user_data = None
         st.session_state.bot_running = False
+        st.session_state.login_sent = False
         st.rerun()
     
     st.markdown('</div>', unsafe_allow_html=True)
