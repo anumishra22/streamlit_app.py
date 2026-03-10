@@ -1,3 +1,4 @@
+
 import streamlit as st
 import json
 import asyncio
@@ -7,295 +8,309 @@ import threading
 import requests
 import gc
 import psutil
+import hashlib
+import random
+import string
+import socket
+import platform
 from datetime import datetime
 from playwright.async_api import async_playwright
 from telegram.ext import Application, CommandHandler, ContextTypes
-import hashlib
+import sqlite3
+from pathlib import Path
+
+# ============== ANURAG MISHRA BRANDING ==============
+APP_NAME = "Anurag Mishra Bot Controller"
+APP_VERSION = "v6.0 PRO"
+ADMIN_NAME = "Anurag Mishra"
+# ===========================================
 
 # ============== CONFIGURATION ==============
-# HARDCODED - BAS YAHAN DAALO
 TELEGRAM_BOT_TOKEN = "8567425809:AAE67VWXbpfHpWurWH6tMlN_pNLoTu6R60k"
-TELEGRAM_CHAT_ID = "8567425809"  # Admin ID - Sirf yeh control kar sakta hai
-
-# SERVER IDENTIFICATION
-SERVER_ID = hashlib.md5(os.urandom(32)).hexdigest()[:8].upper()
-SERVER_NAME = f"FB-BOT-{SERVER_ID}"
-GROUP_NAME = "Unknown"
+TELEGRAM_ADMIN_ID = "8567425809"
 
 MAX_MEMORY_PERCENT = 75
 CRITICAL_MEMORY = 85
-MAX_LOGS = 25
+MAX_LOGS = 50
 RESTART_COOLDOWN = 30
+AUTO_PING_INTERVAL = 180
 # ===========================================
 
-# --- Page Config ---
+# ============== DATABASE SETUP ==============
+def init_db():
+    conn = sqlite3.connect('anurag_bot.db')
+    c = conn.cursor()
+    
+    # Servers table
+    c.execute('''CREATE TABLE IF NOT EXISTS servers (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    user_name TEXT,
+                    user_ip TEXT,
+                    user_device TEXT,
+                    login_time TEXT,
+                    last_active TEXT,
+                    group_name TEXT,
+                    thread_id TEXT,
+                    status TEXT,
+                    messages_sent INTEGER DEFAULT 0,
+                    ram_usage REAL,
+                    session_count INTEGER DEFAULT 1
+                )''')
+    
+    # Logins table - NEW
+    c.execute('''CREATE TABLE IF NOT EXISTS logins (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    server_id TEXT,
+                    user_id TEXT,
+                    user_name TEXT,
+                    ip_address TEXT,
+                    device_info TEXT,
+                    browser TEXT,
+                    login_time TEXT,
+                    location TEXT
+                )''')
+    
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    first_seen TEXT,
+                    last_seen TEXT,
+                    total_logins INTEGER DEFAULT 0,
+                    total_messages INTEGER DEFAULT 0,
+                    servers_count INTEGER DEFAULT 0
+                )''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ============== GET SYSTEM INFO ==============
+def get_system_info():
+    """Get device and network info"""
+    try:
+        hostname = socket.gethostname()
+        ip_address = requests.get('https://api.ipify.org?format=json', timeout=5).json().get('ip', 'Unknown')
+    except:
+        ip_address = 'Unknown'
+    
+    return {
+        'ip': ip_address,
+        'device': platform.system() + " " + platform.release(),
+        'machine': platform.machine(),
+        'processor': platform.processor()[:30] if platform.processor() else 'Unknown'
+    }
+
+# ============== SERVER IDENTIFICATION ==============
+def get_server_id():
+    if 'server_id' not in st.session_state:
+        base = str(time.time()) + str(random.randint(1000, 9999))
+        st.session_state.server_id = "AM-" + hashlib.md5(base.encode()).hexdigest()[:8].upper()
+    return st.session_state.server_id
+
+SERVER_ID = get_server_id()
+USER_ID = st.session_state.get('user_id', 'USER-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6)))
+
+# Get system info
+SYS_INFO = get_system_info()
+
+# ============== PAGE CONFIG ==============
 st.set_page_config(
-    page_title=f"🤖 {SERVER_NAME}", 
-    page_icon="⚡", 
+    page_title=f"{APP_NAME} | {SERVER_ID}",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- PRO CSS ---
-st.markdown("""
+# ============== PROFESSIONAL CSS ==============
+st.markdown(f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;900&display=swap');
     
-    * { font-family: 'Inter', sans-serif; }
+    * {{ font-family: 'Poppins', sans-serif; }}
     
-    .main { 
-        background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%); 
+    .main {{ 
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
         color: #ffffff;
-    }
+    }}
     
-    .stApp { max-width: 100%; }
+    .login-flash {{
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,255,136,0.1);
+        z-index: 9999;
+        animation: flash 0.5s ease-out;
+        pointer-events: none;
+    }}
     
-    /* Header */
-    .server-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 20px;
+    @keyframes flash {{
+        0% {{ opacity: 1; }}
+        100% {{ opacity: 0; }}
+    }}
+    
+    .anurag-header {{
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        padding: 30px;
+        border-radius: 25px;
         margin-bottom: 20px;
-        box-shadow: 0 20px 60px rgba(102, 126, 234, 0.4);
-    }
+        box-shadow: 0 25px 60px rgba(240, 147, 251, 0.4);
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+    }}
     
-    .server-title {
-        font-size: 2.5rem;
+    .anurag-title {{
+        font-size: 3rem;
         font-weight: 900;
         color: white;
         text-shadow: 0 0 30px rgba(255,255,255,0.5);
         margin: 0;
-    }
+    }}
     
-    .server-meta {
-        display: flex;
-        gap: 20px;
-        margin-top: 10px;
-        flex-wrap: wrap;
-    }
-    
-    .meta-badge {
+    .server-badge {{
+        display: inline-block;
         background: rgba(255,255,255,0.2);
-        padding: 8px 16px;
+        padding: 8px 20px;
         border-radius: 50px;
-        font-size: 0.85rem;
+        margin-top: 15px;
         font-weight: 600;
         backdrop-filter: blur(10px);
-    }
+    }}
     
-    /* Status Cards */
-    .status-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-        gap: 20px;
-        margin: 20px 0;
-    }
-    
-    .status-card {
-        background: rgba(255,255,255,0.05);
+    .anurag-card {{
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(20px);
         border-radius: 20px;
         padding: 25px;
-        border: 1px solid rgba(255,255,255,0.1);
-        backdrop-filter: blur(20px);
-        transition: all 0.3s ease;
-    }
+        border: 1px solid rgba(255,255,255,0.2);
+        margin-bottom: 20px;
+    }}
     
-    .status-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 20px 40px rgba(0,0,0,0.3);
-    }
-    
-    .status-running { border-left: 5px solid #00f5d4; }
-    .status-idle { border-left: 5px solid #fee440; }
-    .status-warning { border-left: 5px solid #f15bb5; }
-    .status-critical { border-left: 5px solid #ef233c; animation: critical-pulse 1s infinite; }
-    
-    @keyframes critical-pulse {
-        0%, 100% { box-shadow: 0 0 20px rgba(239, 35, 60, 0.5); }
-        50% { box-shadow: 0 0 40px rgba(239, 35, 60, 0.8); }
-    }
-    
-    .metric-value {
-        font-size: 3rem;
-        font-weight: 900;
-        color: #00f5d4;
-        margin: 10px 0;
-    }
-    
-    .metric-label {
-        color: #a0a0a0;
-        font-size: 0.9rem;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-    }
-    
-    /* Controls */
-    .control-section {
-        background: rgba(255,255,255,0.03);
-        border-radius: 20px;
-        padding: 30px;
-        margin: 20px 0;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    
-    .control-btn {
-        border-radius: 15px !important;
-        height: 60px !important;
-        font-weight: 700 !important;
-        font-size: 1.1rem !important;
-        transition: all 0.3s !important;
-    }
-    
-    .btn-start { background: linear-gradient(135deg, #00f5d4, #00bbf9) !important; color: #000 !important; }
-    .btn-stop { background: linear-gradient(135deg, #f15bb5, #ef233c) !important; }
-    .btn-restart { background: linear-gradient(135deg, #fee440, #f48c06) !important; color: #000 !important; }
-    .btn-clean { background: linear-gradient(135deg, #9b5de5, #f15bb5) !important; }
-    
-    .control-btn:hover {
-        transform: scale(1.05);
-        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-    }
-    
-    /* Logs */
-    .log-container {
-        background: rgba(0,0,0,0.3);
-        border-radius: 20px;
+    .metric-box {{
+        text-align: center;
         padding: 20px;
-        max-height: 400px;
-        overflow-y: auto;
-    }
+    }}
     
-    .log-entry {
+    .metric-value {{
+        font-size: 3rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }}
+    
+    .status-pill {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 20px;
+        border-radius: 50px;
+        font-weight: 700;
+    }}
+    
+    .status-online {{
+        background: linear-gradient(135deg, #11998e, #38ef7d);
+        color: #000;
+    }}
+    
+    .status-offline {{
+        background: linear-gradient(135deg, #ff416c, #ff4b2b);
+        color: white;
+    }}
+    
+    .pulse-dot {{
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: pulse 1s infinite;
+    }}
+    
+    @keyframes pulse {{
+        0%, 100% {{ opacity: 1; transform: scale(1); }}
+        50% {{ opacity: 0.5; transform: scale(1.2); }}
+    }}
+    
+    .log-entry {{
         padding: 12px;
         margin: 8px 0;
-        border-radius: 10px;
+        border-radius: 12px;
         font-family: 'Courier New', monospace;
         font-size: 12px;
         border-left: 4px solid;
         animation: slideIn 0.3s ease;
-    }
+    }}
     
-    @keyframes slideIn {
-        from { opacity: 0; transform: translateX(-20px); }
-        to { opacity: 1; transform: translateX(0); }
-    }
+    .log-login {{ background: rgba(0, 255, 136, 0.2); border-color: #00ff88; color: #00ff88; }}
+    .log-success {{ background: rgba(0, 184, 148, 0.2); border-color: #00b894; color: #00cec9; }}
+    .log-error {{ background: rgba(214, 48, 49, 0.2); border-color: #ff7675; color: #ff7675; }}
+    .log-warning {{ background: rgba(253, 203, 110, 0.2); border-color: #fdcb6e; color: #fdcb6e; }}
+    .log-info {{ background: rgba(116, 185, 255, 0.2); border-color: #74b9ff; color: #74b9ff; }}
     
-    .log-success { background: rgba(0, 245, 212, 0.1); border-color: #00f5d4; color: #00f5d4; }
-    .log-error { background: rgba(239, 35, 60, 0.1); border-color: #ef233c; color: #ef233c; }
-    .log-warning { background: rgba(254, 228, 64, 0.1); border-color: #fee440; color: #fee440; }
-    .log-info { background: rgba(155, 93, 229, 0.1); border-color: #9b5de5; color: #c77dff; }
-    .log-telegram { background: rgba(0, 187, 249, 0.1); border-color: #00bbf9; color: #00bbf9; }
-    
-    /* Telegram Status */
-    .tg-status {
+    .telegram-float {{
         position: fixed;
-        top: 20px;
-        right: 20px;
-        background: linear-gradient(135deg, #0088cc, #00c6ff);
+        bottom: 30px;
+        right: 30px;
+        background: linear-gradient(135deg, #0088cc, #00a8e8);
+        color: white;
         padding: 15px 25px;
         border-radius: 50px;
         font-weight: 700;
         box-shadow: 0 10px 30px rgba(0, 136, 204, 0.4);
-        z-index: 999;
-    }
+        z-index: 9999;
+    }}
     
-    /* Config Form */
-    .config-card {
-        background: rgba(255,255,255,0.05);
-        border-radius: 20px;
-        padding: 25px;
-        margin: 15px 0;
-    }
+    .new-login-banner {{
+        background: linear-gradient(135deg, #00b894, #00cec9);
+        color: #000;
+        padding: 15px;
+        border-radius: 15px;
+        text-align: center;
+        font-weight: 700;
+        margin-bottom: 20px;
+        animation: slideDown 0.5s ease;
+    }}
     
-    .stTextInput > div > div > input, .stNumberInput > div > div > input {
-        background: rgba(0,0,0,0.3) !important;
-        border: 1px solid rgba(255,255,255,0.2) !important;
-        border-radius: 12px !important;
-        color: white !important;
-        padding: 15px !important;
-    }
-    
-    .stTextArea > div > div > textarea {
-        background: rgba(0,0,0,0.3) !important;
-        border: 1px solid rgba(255,255,255,0.2) !important;
-        border-radius: 12px !important;
-        color: white !important;
-        font-family: 'Courier New', monospace !important;
-    }
-    
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 8px; }
-    ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 10px; }
-    ::-webkit-scrollbar-thumb { background: #667eea; border-radius: 10px; }
-    ::-webkit-scrollbar-thumb:hover { background: #764ba2; }
-    
-    /* Animations */
-    .pulse-dot {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: #00f5d4;
-        margin-right: 10px;
-        animation: dot-pulse 1s infinite;
-    }
-    
-    @keyframes dot-pulse {
-        0%, 100% { transform: scale(1); opacity: 1; }
-        50% { transform: scale(1.5); opacity: 0.5; }
-    }
+    @keyframes slideDown {{
+        from {{ transform: translateY(-100%); opacity: 0; }}
+        to {{ transform: translateY(0); opacity: 1; }}
+    }}
     </style>
 """, unsafe_allow_html=True)
 
 # ============== TELEGRAM MANAGER ==============
-class TelegramManager:
-    def __init__(self, token, chat_id):
+class AnuragTelegramManager:
+    def __init__(self, token, admin_id):
         self.token = token
-        self.admin_id = str(chat_id)
+        self.admin_id = str(admin_id)
         self.app = None
         self.enabled = True
         self.last_alert = 0
-        self.alert_cooldown = 30
+        self.alert_cooldown = 20
         
     async def init(self):
         try:
             self.app = Application.builder().token(self.token).build()
             
-            # Admin commands
-            self.app.add_handler(CommandHandler("start", self.cmd_admin_start))
+            self.app.add_handler(CommandHandler("start", self.cmd_start))
             self.app.add_handler(CommandHandler("servers", self.cmd_servers))
+            self.app.add_handler(CommandHandler("logins", self.cmd_logins))
+            self.app.add_handler(CommandHandler("users", self.cmd_users))
             self.app.add_handler(CommandHandler("status", self.cmd_status))
             self.app.add_handler(CommandHandler("startbot", self.cmd_start_bot))
             self.app.add_handler(CommandHandler("stopbot", self.cmd_stop_bot))
             self.app.add_handler(CommandHandler("restart", self.cmd_restart))
-            self.app.add_handler(CommandHandler("restartall", self.cmd_restart_all))
-            self.app.add_handler(CommandHandler("memory", self.cmd_memory))
-            self.app.add_handler(CommandHandler("logs", self.cmd_logs))
-            self.app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
+            self.app.add_handler(CommandHandler("globals", self.cmd_global_stats))
             self.app.add_handler(CommandHandler("help", self.cmd_help))
             
             await self.app.initialize()
             await self.app.start()
             await self.app.updater.start_polling(drop_pending_updates=True)
-            
-            await self.send_admin(f"""
-🔥 *{SERVER_NAME} ONLINE*
-
-🆔 Server: `{SERVER_ID}`
-👤 Admin ID: `{self.admin_id}`
-
-*Commands:*
-/servers - List all servers
-/status - This server status
-/startbot - Start this bot
-/stopbot - Stop this bot
-/restart - Restart this server
-/restartall - Restart all servers
-/memory - RAM usage
-/logs - Recent logs
-/broadcast - Message all servers
-/help - Help
-            """, "system")
             
             return True
         except Exception as e:
@@ -303,134 +318,154 @@ class TelegramManager:
             return False
     
     def is_admin(self, update):
-        user_id = str(update.effective_chat.id)
-        if user_id != self.admin_id:
-            asyncio.create_task(update.message.reply_text("⛔ *Unauthorized Access!*", parse_mode='Markdown'))
-            return False
-        return True
+        return str(update.effective_chat.id) == self.admin_id
     
-    # Admin Commands
-    async def cmd_admin_start(self, update, context):
+    async def cmd_start(self, update, context):
+        if not self.is_admin(update):
+            await update.message.reply_text("⛔ *Unauthorized!*", parse_mode='Markdown')
+            return
+        await update.message.reply_text(f"✅ *Welcome {ADMIN_NAME}!*\n\nUse /help for commands", parse_mode='Markdown')
+    
+    async def cmd_logins(self, update, context):
         if not self.is_admin(update):
             return
-        await self.send_admin("✅ *Admin Verified!*\nUse /help for commands", "success")
+        conn = sqlite3.connect('anurag_bot.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM logins ORDER BY login_time DESC LIMIT 10")
+        logins = c.fetchall()
+        conn.close()
+        
+        if not logins:
+            await update.message.reply_text("📭 *No login records*", parse_mode='Markdown')
+            return
+        
+        text = "🔑 *RECENT LOGINS*\n\n"
+        for login in logins:
+            _, sid, uid, uname, ip, device, browser, time, loc = login
+            text += f"👤 `{uname}`\n🆔 `{sid}`\n📍 IP: `{ip}`\n💻 `{device}`\n🕐 `{time}`\n\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
     
     async def cmd_servers(self, update, context):
         if not self.is_admin(update):
             return
-        await update.message.reply_text(f"""
-🖥️ *ACTIVE SERVERS*
-
-🆔 `{SERVER_NAME}`
-📊 Status: {'🟢 Running' if st.session_state.get('bot_running') else '🔴 Idle'}
-💾 RAM: `{psutil.virtual_memory().percent}%`
-📨 Messages: `{st.session_state.get('message_count', 0)}`
-        """, parse_mode='Markdown')
+        conn = sqlite3.connect('anurag_bot.db')
+        c = conn.cursor()
+        c.execute("SELECT id, user_name, group_name, status, messages_sent, ram_usage FROM servers ORDER BY last_active DESC")
+        servers = c.fetchall()
+        conn.close()
+        
+        text = "🖥️ *ACTIVE SERVERS*\n\n"
+        for s in servers[:10]:
+            sid, uname, gname, status, msgs, ram = s
+            emoji = "🟢" if status == "RUNNING" else "🔴"
+            text += f"{emoji} `{sid}` | 👤 {uname}\n📱 {gname} | 💬 {msgs}\n\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+    
+    async def cmd_users(self, update, context):
+        if not self.is_admin(update):
+            return
+        conn = sqlite3.connect('anurag_bot.db')
+        c = conn.cursor()
+        c.execute("SELECT name, total_logins, total_messages FROM users ORDER BY total_logins DESC")
+        users = c.fetchall()
+        conn.close()
+        
+        text = "👥 *USER ACTIVITY*\n\n"
+        for u in users[:10]:
+            name, logins, msgs = u
+            text += f"👤 *{name}*\n🔑 {logins} logins | 💬 {msgs} msgs\n\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
     
     async def cmd_status(self, update, context):
         if not self.is_admin(update):
             return
         mem = psutil.virtual_memory()
         status = "🟢 RUNNING" if st.session_state.get('bot_running') else "🔴 STOPPED"
+        
         await update.message.reply_text(f"""
-📊 *{SERVER_NAME} STATUS*
+📊 *{SERVER_ID} STATUS*
 
 {status}
-🆔 ID: `{SERVER_ID}`
-💾 RAM: `{mem.percent}%` ({mem.used//1024//1024}MB / {mem.total//1024//1024}MB)
+👤 User: `{st.session_state.get('user_name', 'Unknown')}`
+💾 RAM: `{mem.percent}%`
 🔄 Restarts: `{st.session_state.get('restart_count', 0)}`
-🧹 Cleanups: `{st.session_state.get('cleanup_count', 0)}`
-📨 Messages: `{st.session_state.get('message_count', 0)}`
-⏱️ Uptime: Running
+💬 Messages: `{st.session_state.get('message_count', 0)}`
+📱 Group: `{st.session_state.get('group_name', 'Not set')}`
         """, parse_mode='Markdown')
     
     async def cmd_start_bot(self, update, context):
         if not self.is_admin(update):
             return
         st.session_state.tg_command = "START"
-        await update.message.reply_text(f"🚀 *Starting {SERVER_NAME}...*", parse_mode='Markdown')
-        await self.send_admin(f"🚀 *Start command received for {SERVER_NAME}*", "command")
+        await update.message.reply_text(f"🚀 *Starting {SERVER_ID}...*", parse_mode='Markdown')
     
     async def cmd_stop_bot(self, update, context):
         if not self.is_admin(update):
             return
         st.session_state.tg_command = "STOP"
-        await update.message.reply_text(f"🛑 *Stopping {SERVER_NAME}...*", parse_mode='Markdown')
-        await self.send_admin(f"🛑 *Stop command received for {SERVER_NAME}*", "command")
+        await update.message.reply_text(f"🛑 *Stopping {SERVER_ID}...*", parse_mode='Markdown')
     
     async def cmd_restart(self, update, context):
         if not self.is_admin(update):
             return
         st.session_state.tg_command = "RESTART"
-        await update.message.reply_text(f"🔄 *Restarting {SERVER_NAME}...*", parse_mode='Markdown')
-        await self.send_admin(f"🔄 *Restart command received for {SERVER_NAME}*", "command")
+        await update.message.reply_text(f"🔄 *Restarting {SERVER_ID}...*", parse_mode='Markdown')
     
-    async def cmd_restart_all(self, update, context):
+    async def cmd_global_stats(self, update, context):
         if not self.is_admin(update):
             return
-        st.session_state.tg_command = "RESTART"
-        await update.message.reply_text("🔄 *Restart ALL servers command sent!*", parse_mode='Markdown')
-        await self.send_admin("🔄 *RESTART ALL command executed*", "command")
-    
-    async def cmd_memory(self, update, context):
-        if not self.is_admin(update):
-            return
-        mem = psutil.virtual_memory()
+        conn = sqlite3.connect('anurag_bot.db')
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*), SUM(total_logins), SUM(total_messages) FROM users")
+        total_users, total_logins, total_msgs = c.fetchone()
+        c.execute("SELECT COUNT(*) FROM servers WHERE status='RUNNING'")
+        active_servers = c.fetchone()[0]
+        conn.close()
+        
         await update.message.reply_text(f"""
-🧠 *{SERVER_NAME} MEMORY*
+🌍 *GLOBAL STATISTICS - {ADMIN_NAME}*
 
-Used: `{mem.percent}%`
-Available: `{mem.available//1024//1024} MB`
-Total: `{mem.total//1024//1024} MB`
-Free: `{mem.free//1024//1024} MB`
+👥 Total Users: `{total_users or 0}`
+🔑 Total Logins: `{total_logins or 0}`
+💬 Total Messages: `{total_msgs or 0}`
+🖥️ Active Servers: `{active_servers or 0}`
+📊 Total Servers: `{total_users or 0}`
+
+✨ *Bot Network Active*
         """, parse_mode='Markdown')
-    
-    async def cmd_logs(self, update, context):
-        if not self.is_admin(update):
-            return
-        logs = st.session_state.get('logs', [])[:10]
-        text = f"📋 *{SERVER_NAME} LOGS*\n\n" + "\n".join([f"`{l[:70]}`" for l in logs])
-        await update.message.reply_text(text, parse_mode='Markdown')
-    
-    async def cmd_broadcast(self, update, context):
-        if not self.is_admin(update):
-            return
-        msg = ' '.join(context.args) if context.args else "Test broadcast"
-        await self.send_admin(f"📢 *BROADCAST*\n\n{msg}", "broadcast")
-        await update.message.reply_text("📢 *Broadcast sent!*", parse_mode='Markdown')
     
     async def cmd_help(self, update, context):
         if not self.is_admin(update):
             return
-        await update.message.reply_text("""
-🤖 *ADMIN COMMANDS*
+        await update.message.reply_text(f"""
+🤖 *{APP_NAME} - Admin Commands*
 
-/servers - List all active servers
-/status - Current server status
+/logins - Recent login activity
+/servers - All active servers
+/users - All users activity
+/status - Current server
 /startbot - Start this server
 /stopbot - Stop this server  
 /restart - Restart this server
-/restartall - Restart ALL servers
-/memory - Memory usage
-/logs - View recent logs
-/broadcast [msg] - Send to all
+/globals - Global statistics
 /help - This help
 
-⚡ You have FULL control!
+⚡ *{ADMIN_NAME}'s Control Center*
         """, parse_mode='Markdown')
     
-    async def send_admin(self, text, msg_type="info"):
-        """Send message to admin with rate limiting"""
+    async def send_to_admin(self, text, msg_type="info"):
         if not self.enabled or not self.app:
             return
         
         now = time.time()
-        if msg_type not in ["system", "command", "critical", "fatal"] and now - self.last_alert < self.alert_cooldown:
+        if msg_type not in ["system", "login", "critical", "cookie"] and now - self.last_alert < self.alert_cooldown:
             return
         self.last_alert = now
         
-        # Add server prefix
-        full_text = f"🖥️ *{SERVER_NAME}*\n{text}"
+        full_text = f"🤖 *{APP_NAME}*\n\n{text}\n\n⏰ `{datetime.now().strftime('%H:%M:%S')}`"
         
         try:
             await self.app.bot.send_message(
@@ -440,9 +475,24 @@ Free: `{mem.free//1024//1024} MB`
             )
         except Exception as e:
             print(f"Telegram send error: {e}")
+    
+    async def send_login_alert(self, user_name, user_id, ip, device, server_id):
+        """Send login notification to admin"""
+        await self.send_to_admin(f"""
+🔔 *NEW LOGIN ALERT*
+
+👤 User: `{user_name}`
+🆔 ID: `{user_id}`
+🖥️ Server: `{server_id}`
+📍 IP: `{ip}`
+💻 Device: `{device}`
+🕐 Time: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
+
+✅ Panel Accessed
+        """, "login")
 
 # ============== MEMORY MANAGER ==============
-class MemoryManager:
+class AnuragMemoryManager:
     def __init__(self):
         self.process = psutil.Process()
         self.last_restart = 0
@@ -454,9 +504,10 @@ class MemoryManager:
         if 'logs' in st.session_state and len(st.session_state.logs) > MAX_LOGS:
             st.session_state.logs = st.session_state.logs[:MAX_LOGS]
         
-        keep = ['bot_running', 'logs', 'memory_mgr', 'telegram_mgr', 
-                'restart_count', 'cleanup_count', 'message_count', 
-                'last_health_check', 'tg_command', 'ka_started', 'tg_started']
+        keep = ['bot_running', 'logs', 'memory_mgr', 'telegram_mgr', 'user_id', 'server_id',
+                'restart_count', 'cleanup_count', 'message_count', 'group_name', 'thread_id',
+                'last_health_check', 'tg_command', 'user_name', 'login_time', 'ip_address',
+                'device_info', 'login_notified']
         for key in list(st.session_state.keys()):
             if key not in keep and not key.startswith('_'):
                 del st.session_state[key]
@@ -474,10 +525,53 @@ class MemoryManager:
             return True
         return False
 
-# ============== INIT ==============
+# ============== DATABASE FUNCTIONS ==============
+def record_login(user_name, user_id, ip, device):
+    """Record login in database"""
+    conn = sqlite3.connect('anurag_bot.db')
+    c = conn.cursor()
+    
+    # Record login
+    c.execute("""INSERT INTO logins 
+                 (server_id, user_id, user_name, ip_address, device_info, browser, login_time, location)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+              (SERVER_ID, user_id, user_name, ip, device, "Streamlit", 
+               datetime.now().isoformat(), "Unknown"))
+    
+    # Update or insert user
+    c.execute("""INSERT INTO users (id, name, first_seen, last_seen, total_logins)
+                 VALUES (?, ?, ?, ?, 1)
+                 ON CONFLICT(id) DO UPDATE SET
+                 last_seen = ?,
+                 total_logins = total_logins + 1""",
+              (user_id, user_name, datetime.now().isoformat(), 
+               datetime.now().isoformat(), datetime.now().isoformat()))
+    
+    # Update server
+    c.execute("""INSERT OR REPLACE INTO servers 
+                 (id, user_id, user_name, user_ip, user_device, login_time, last_active, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+              (SERVER_ID, user_id, user_name, ip, device, 
+               datetime.now().isoformat(), datetime.now().isoformat(), "ONLINE"))
+    
+    conn.commit()
+    conn.close()
+
+def update_server_status(status, group_name="", thread_id=""):
+    conn = sqlite3.connect('anurag_bot.db')
+    c = conn.cursor()
+    c.execute("""UPDATE servers SET status = ?, group_name = ?, thread_id = ?, 
+                 last_active = ?, messages_sent = ?, ram_usage = ? WHERE id = ?""",
+              (status, group_name, thread_id, datetime.now().isoformat(),
+               st.session_state.get('message_count', 0),
+               psutil.virtual_memory().percent, SERVER_ID))
+    conn.commit()
+    conn.close()
+
+# ============== INIT SESSION ==============
 if 'memory_mgr' not in st.session_state:
-    st.session_state.memory_mgr = MemoryManager()
-    st.session_state.telegram_mgr = TelegramManager(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+    st.session_state.memory_mgr = AnuragMemoryManager()
+    st.session_state.telegram_mgr = AnuragTelegramManager(TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
     st.session_state.logs = []
     st.session_state.bot_running = False
     st.session_state.restart_count = 0
@@ -485,16 +579,49 @@ if 'memory_mgr' not in st.session_state:
     st.session_state.message_count = 0
     st.session_state.last_health_check = time.time()
     st.session_state.tg_command = None
+    st.session_state.login_notified = False
+    st.session_state.user_name = ""
+    st.session_state.ip_address = SYS_INFO['ip']
+    st.session_state.device_info = SYS_INFO['device']
+    st.session_state.login_time = datetime.now()
 
 mm = st.session_state.memory_mgr
 tg = st.session_state.telegram_mgr
 
 def log(msg, level="INFO"):
     t = datetime.now().strftime("%H:%M:%S")
-    entry = f"[{t}] {level}: {msg}"
+    colors = {"LOGIN": "🔑", "INFO": "ℹ️", "SUCCESS": "✅", "WARNING": "⚠️", "ERROR": "❌"}
+    emoji = colors.get(level, "⬜")
+    entry = f"{emoji} [{t}] {level}: {msg}"
     st.session_state.logs.insert(0, entry)
     if len(st.session_state.logs) > MAX_LOGS:
         st.session_state.logs.pop()
+
+# ============== LOGIN NOTIFICATION ==============
+def handle_login():
+    """Handle new login and send notification"""
+    if not st.session_state.get('login_notified', False):
+        user_name = st.session_state.get('user_name', 'Unknown')
+        
+        # Record in DB
+        record_login(user_name, USER_ID, SYS_INFO['ip'], SYS_INFO['device'])
+        
+        # Send to Telegram
+        try:
+            asyncio.run(tg.send_login_alert(
+                user_name, 
+                USER_ID, 
+                SYS_INFO['ip'], 
+                SYS_INFO['device'],
+                SERVER_ID
+            ))
+            log(f"Login notification sent for {user_name}", "LOGIN")
+        except Exception as e:
+            log(f"Failed to send login alert: {e}", "ERROR")
+        
+        st.session_state.login_notified = True
+        return True
+    return False
 
 # ============== FILE HELPERS ==============
 def save(f, c):
@@ -521,34 +648,55 @@ def parse_cookies(s):
                 continue
     return cookies
 
-# ============== SELF-HEALING BOT ==============
-async def super_bot(url, msg, delay):
+# ============== AUTO PING ==============
+def auto_ping():
+    while True:
+        try:
+            update_server_status("RUNNING" if st.session_state.get('bot_running') else "IDLE",
+                               st.session_state.get('group_name', ''),
+                               st.session_state.get('thread_id', ''))
+            
+            if mm.need_restart():
+                st.session_state.trigger_restart = True
+            
+            time.sleep(AUTO_PING_INTERVAL)
+        except:
+            time.sleep(60)
+
+if 'ping_started' not in st.session_state:
+    threading.Thread(target=auto_ping, daemon=True).start()
+    st.session_state.ping_started = True
+
+# ============== BOT LOGIC ==============
+async def anurag_bot(url, msg, delay, group_name):
     st.session_state.bot_running = True
+    st.session_state.group_name = group_name
     attempt = 0
     
-    # Notify admin
-    await tg.send_admin(f"""
+    update_server_status("RUNNING", group_name, url.split('/')[-1])
+    
+    await tg.send_to_admin(f"""
 🚀 *BOT STARTED*
 
-🎯 Target: `{url.split('/')[-1]}`
-⏱️ Delay: `{delay}s`
-💾 Initial RAM: `{mm.get_ram()}%`
+👤 {st.session_state.get('user_name', 'Unknown')}
+📱 {group_name}
+🆔 {SERVER_ID}
+⏱️ {delay}s delay
     """, "start")
     
     while attempt < 100 and st.session_state.get('bot_running', False):
         browser = None
         try:
-            log(f"Launch attempt #{attempt + 1}")
+            log(f"Attempt #{attempt + 1}")
             
             if mm.get_ram() > MAX_MEMORY_PERCENT:
-                log("Pre-launch cleanup", "CLEAN")
                 mm.cleanup()
             
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=True,
                     executable_path="/usr/bin/chromium",
-                    args=['--no-sandbox', '--disable-gpu', '--single-process', '--no-zygote', '--disable-images', '--disable-javascript']
+                    args=['--no-sandbox', '--disable-gpu', '--single-process', '--no-zygote', '--disable-images']
                 )
                 
                 ctx = await browser.new_context(viewport={'width': 1280, 'height': 720})
@@ -560,60 +708,48 @@ async def super_bot(url, msg, delay):
                         await ctx.add_cookies(essential[:2])
                 
                 page = await ctx.new_page()
-                log("Loading Facebook...")
                 await page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 await asyncio.sleep(10)
                 
                 if "login" in page.url:
-                    await tg.send_admin("❌ *LOGIN FAILED!* Check cookies", "error")
+                    await tg.send_to_admin(f"❌ Login failed - {group_name}", "ERROR")
                     break
                 
                 if attempt == 0:
-                    await tg.send_admin("✅ *CONNECTED!* Sending messages...", "success")
+                    await tg.send_to_admin(f"✅ Connected to {group_name}", "SUCCESS")
                 
                 sent = 0
                 last_clean = time.time()
                 last_status = time.time()
                 
                 while st.session_state.get('bot_running', False):
-                    # Check Telegram commands
                     cmd = st.session_state.get('tg_command')
                     if cmd == "STOP":
                         st.session_state.tg_command = None
                         st.session_state.bot_running = False
-                        await tg.send_admin("🛑 *STOPPED by Telegram command*", "stop")
+                        await tg.send_to_admin(f"🛑 Stopped - {group_name}", "INFO")
                         break
                     
                     if cmd == "RESTART":
                         st.session_state.tg_command = None
-                        raise Exception("Admin restart requested")
+                        raise Exception("Restart")
                     
-                    # Memory check every 30 sec
                     if time.time() - last_clean > 30:
                         ram = mm.get_ram()
                         if ram > CRITICAL_MEMORY:
-                            await tg.send_admin(f"🔥 *CRITICAL MEMORY: {ram}%!*\nAuto-restarting...", "critical")
-                            raise MemoryError("Critical RAM")
+                            await tg.send_to_admin(f"🔥 Critical {ram}% - {group_name}", "ERROR")
+                            raise MemoryError("Critical")
                         elif ram > MAX_MEMORY_PERCENT:
-                            log(f"High memory: {ram}%", "WARN")
                             mm.cleanup()
                             await page.close()
                             page = await ctx.new_page()
                             await page.goto(url, timeout=30000)
                         last_clean = time.time()
                     
-                    # Hourly update
                     if time.time() - last_status > 3600:
-                        await tg.send_admin(f"""
-⏰ *HOURLY REPORT*
-
-📨 Messages: `{sent}`
-💾 RAM: `{mm.get_ram()}%`
-🔄 Attempts: `{attempt}`
-                        """, "hourly")
+                        await tg.send_to_admin(f"⏰ Hourly: {sent} msgs in {group_name}", "INFO")
                         last_status = time.time()
                     
-                    # Send message
                     try:
                         box = await page.wait_for_selector('div[contenteditable="true"]', timeout=5000)
                         if box:
@@ -621,19 +757,18 @@ async def super_bot(url, msg, delay):
                             await page.keyboard.press('Enter')
                             sent += 1
                             st.session_state.message_count = sent
+                            update_server_status("RUNNING", group_name, url.split('/')[-1])
                             
                             if sent % 25 == 0:
-                                await tg.send_admin(f"📨 *Progress: {sent} messages sent*", "progress")
-                                log(f"Sent {sent} messages")
+                                await tg.send_to_admin(f"📨 {group_name}: {sent} msgs", "SUCCESS")
                             
                             await asyncio.sleep(delay)
                     except Exception as e:
-                        log(f"Send error: {str(e)[:30]}", "WARN")
+                        log(f"Send error: {str(e)[:30]}", "WARNING")
                         await asyncio.sleep(3)
                 
                 await browser.close()
-                log("Clean shutdown")
-                await tg.send_admin(f"✅ *BOT STOPPED*\nTotal messages: `{sent}`", "stop")
+                await tg.send_to_admin(f"✅ Stopped - {group_name}\nTotal: {sent}", "SUCCESS")
                 break
                 
         except MemoryError:
@@ -643,7 +778,7 @@ async def super_bot(url, msg, delay):
                 except: pass
             mm.cleanup()
             gc.collect()
-            await tg.send_admin(f"💀 *MEMORY CRASH #{attempt}*\nRestarting in 10s...", "critical")
+            await tg.send_to_admin(f"💀 Crash #{attempt} - {group_name}", "ERROR")
             await asyncio.sleep(10)
             
         except Exception as e:
@@ -654,14 +789,13 @@ async def super_bot(url, msg, delay):
                 try: await browser.close()
                 except: pass
             if attempt % 5 == 0:
-                await tg.send_admin(f"⚠️ *ERROR #{attempt}*\n`{err[:100]}`", "error")
+                await tg.send_to_admin(f"⚠️ Error #{attempt} - {group_name}", "ERROR")
             await asyncio.sleep(5)
     
     st.session_state.bot_running = False
-    if attempt >= 100:
-        await tg.send_admin("🚫 *MAX RESTARTS!* Bot stopped. Check manually.", "fatal")
+    update_server_status("STOPPED", group_name, url.split('/')[-1])
 
-# ============== PROCESS TELEGRAM COMMANDS ==============
+# ============== PROCESS COMMANDS ==============
 def process_tg():
     cmd = st.session_state.get('tg_command')
     if not cmd:
@@ -669,44 +803,23 @@ def process_tg():
     
     if cmd == "START" and not st.session_state.bot_running:
         st.session_state.tg_command = None
-        t, m, s = read('thread.txt'), read('message.txt'), read('speed.txt')
-        if all([t, m, s]):
+        t, m, s, g = read('thread.txt'), read('message.txt'), read('speed.txt'), read('group.txt')
+        if all([t, m, s, g]):
             url = f"https://www.facebook.com/messages/t/{t}"
-            threading.Thread(target=lambda: asyncio.run(super_bot(url, m, float(s))), daemon=True).start()
+            threading.Thread(target=lambda: asyncio.run(anurag_bot(url, m, float(s), g)), daemon=True).start()
             st.session_state.bot_running = True
-            log("Bot started via Telegram")
             st.rerun()
     
     elif cmd == "STOP" and st.session_state.bot_running:
         st.session_state.tg_command = None
         st.session_state.bot_running = False
-        log("Bot stopped via Telegram")
         st.rerun()
     
     elif cmd == "RESTART":
         st.session_state.tg_command = None
         st.session_state.restart_count += 1
         st.session_state.bot_running = False
-        log("Restart via Telegram", "RESTART")
         st.rerun()
-
-# ============== KEEP ALIVE ==============
-def keep_alive():
-    while True:
-        try:
-            if mm.need_restart():
-                st.session_state.trigger_restart = True
-                try:
-                    asyncio.run(tg.send_admin(f"🔥 *AUTO-RESTART: {mm.get_ram()}% RAM*", "critical"))
-                except: pass
-            
-            time.sleep(300)
-        except:
-            time.sleep(60)
-
-if 'ka_started' not in st.session_state:
-    threading.Thread(target=keep_alive, daemon=True).start()
-    st.session_state.ka_started = True
 
 # ============== START TELEGRAM ==============
 if 'tg_started' not in st.session_state:
@@ -715,196 +828,216 @@ if 'tg_started' not in st.session_state:
     threading.Thread(target=start_tg, daemon=True).start()
     st.session_state.tg_started = True
 
-# ============== UI ==============
-# Telegram Status Badge
-st.markdown(f'<div class="tg-status">📱 Telegram: 🟢 Connected</div>', unsafe_allow_html=True)
+# ============== UI STARTS HERE ==============
 
-# Server Header
-st.markdown(f"""
-    <div class="server-header">
-        <h1 class="server-title">🤖 {SERVER_NAME}</h1>
-        <div class="server-meta">
-            <span class="meta-badge">🆔 {SERVER_ID}</span>
-            <span class="meta-badge">{'🟢 ONLINE' if st.session_state.bot_running else '⚪ STANDBY'}</span>
-            <span class="meta-badge">💾 RAM: {mm.get_ram()}%</span>
-            <span class="meta-badge">📨 {st.session_state.message_count} msgs</span>
+# HANDLE LOGIN FIRST
+is_new_login = handle_login()
+
+# Show login flash effect
+if is_new_login:
+    st.markdown('<div class="login-flash"></div>', unsafe_allow_html=True)
+    st.markdown(f"""
+        <div class="new-login-banner">
+            🔑 Welcome {st.session_state.get('user_name', 'User')}! Login notification sent to {ADMIN_NAME}
         </div>
+    """, unsafe_allow_html=True)
+
+# Floating Telegram
+st.markdown(f'<div class="telegram-float">📱 Telegram Active</div>', unsafe_allow_html=True)
+
+# Header
+st.markdown(f"""
+    <div class="anurag-header">
+        <h1 class="anurag-title">🤖 {APP_NAME}</h1>
+        <p class="anurag-subtitle">Created by {ADMIN_NAME} • Professional Bot Controller</p>
+        <span class="server-badge">🆔 {SERVER_ID} | 👤 {USER_ID}</span>
     </div>
 """, unsafe_allow_html=True)
 
 process_tg()
 
-# Status Grid
-ram = mm.get_ram()
-running = st.session_state.bot_running
-
-st.markdown('<div class="status-grid">', unsafe_allow_html=True)
-
-col1, col2, col3, col4 = st.columns(4)
+# User Panel
+st.markdown('<div class="anurag-card">', unsafe_allow_html=True)
+col1, col2, col3 = st.columns([1, 2, 1])
 
 with col1:
-    status_class = "status-running" if running else "status-idle"
-    status_text = "RUNNING" if running else "IDLE"
-    st.markdown(f"""
-        <div class="status-card {status_class}">
-            <div class="metric-label">STATUS</div>
-            <div class="metric-value" style="font-size: 1.5rem;">{status_text}</div>
-            <div style="color: {'#00f5d4' if running else '#fee440'}">{'<span class="pulse-dot"></span>Active' if running else 'Standby'}</div>
-        </div>
-    """, unsafe_allow_html=True)
+    initial = st.session_state.get('user_name', 'A')[:1].upper() if st.session_state.get('user_name') else "👤"
+    st.markdown(f'<div style="width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg, #fa709a, #fee140);display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:800;color:white;margin:0 auto;">{initial}</div>', unsafe_allow_html=True)
 
 with col2:
-    ram_color = "#ef233c" if ram > CRITICAL_MEMORY else "#f15bb5" if ram > MAX_MEMORY_PERCENT else "#00f5d4"
-    st.markdown(f"""
-        <div class="status-card {'status-critical' if ram > CRITICAL_MEMORY else 'status-warning' if ram > MAX_MEMORY_PERCENT else ''}">
-            <div class="metric-label">MEMORY</div>
-            <div class="metric-value" style="color: {ram_color}">{ram:.1f}%</div>
-            <div style="color: {ram_color}">{'CRITICAL' if ram > CRITICAL_MEMORY else 'HIGH' if ram > MAX_MEMORY_PERCENT else 'NORMAL'}</div>
-        </div>
-    """, unsafe_allow_html=True)
+    user_name = st.text_input("Your Name", value=st.session_state.get('user_name', ''), 
+                              placeholder="Enter your name", key="user_name_input")
+    if user_name and user_name != st.session_state.get('user_name'):
+        st.session_state.user_name = user_name
+        # Re-send login with new name
+        st.session_state.login_notified = False
+        handle_login()
+        st.rerun()
 
 with col3:
+    ram = mm.get_ram()
+    color = "#00b894" if ram < MAX_MEMORY_PERCENT else "#fdcb6e" if ram < CRITICAL_MEMORY else "#d63031"
     st.markdown(f"""
-        <div class="status-card">
-            <div class="metric-label">RESTARTS</div>
-            <div class="metric-value" style="color: #9b5de5">{st.session_state.restart_count}</div>
-            <div style="color: #c77dff">Auto-healing</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-with col4:
-    st.markdown(f"""
-        <div class="status-card">
-            <div class="metric-label">CLEANUPS</div>
-            <div class="metric-value" style="color: #00bbf9">{st.session_state.cleanup_count}</div>
-            <div style="color: #74b9ff">Memory mgmt</div>
+        <div style="text-align:center;padding:15px;background:rgba(0,0,0,0.3);border-radius:15px;">
+            <div style="font-size:2.5rem;font-weight:800;color:{color};">{ram:.0f}%</div>
+            <div style="font-size:0.9rem;color:#888;">RAM Usage</div>
         </div>
     """, unsafe_allow_html=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Controls Section
-st.markdown('<div class="control-section">', unsafe_allow_html=True)
-st.subheader("🎮 Control Panel")
+# System Info
+with st.expander("💻 Your System Info"):
+    st.markdown(f"""
+    | Property | Value |
+    |----------|-------|
+    | **Server ID** | `{SERVER_ID}` |
+    | **User ID** | `{USER_ID}` |
+    | **IP Address** | `{SYS_INFO['ip']}` |
+    | **Device** | `{SYS_INFO['device']}` |
+    | **Machine** | `{SYS_INFO['machine']}` |
+    | **Login Time** | `{st.session_state.get('login_time', datetime.now()).strftime('%Y-%m-%d %H:%M:%S')}` |
+    """)
+
+# Metrics
+st.markdown('<div class="anurag-card"><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;">', unsafe_allow_html=True)
+cols = st.columns(4)
+metrics = [
+    (st.session_state.restart_count, "RESTARTS", "#ff6b6b"),
+    (st.session_state.cleanup_count, "CLEANUPS", "#4ecdc4"),
+    (st.session_state.message_count, "MESSAGES", "#ffe66d"),
+    (len([l for l in st.session_state.logs if "LOGIN" in l]), "LOGINS", "#a8e6cf")
+]
+for col, (val, label, color) in zip(cols, metrics):
+    with col:
+        st.markdown(f'<div class="metric-box"><div class="metric-value" style="background:linear-gradient(135deg,{color},#fff);-webkit-background-clip:text;">{val}</div><div class="metric-label">{label}</div></div>', unsafe_allow_html=True)
+st.markdown('</div></div>', unsafe_allow_html=True)
+
+# Status & Controls
+running = st.session_state.bot_running
+group_name = st.session_state.get('group_name', '')
+
+st.markdown('<div class="anurag-card">', unsafe_allow_html=True)
+
+status_class = "status-online" if running else "status-offline"
+status_text = "ONLINE" if running else "OFFLINE"
+
+st.markdown(f"""
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <div class="status-pill {status_class}"><span class="pulse-dot"></span>{status_text}</div>
+        <div style="text-align:right;"><div style="font-size:1.5rem;font-weight:700;">{group_name or 'No Group'}</div><div style="font-size:0.9rem;color:#888;">Target Group</div></div>
+    </div>
+""", unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
-
 with c1:
-    if st.button("🚀 START", disabled=running, use_container_width=True, key="start_btn"):
-        t, m, s = read('thread.txt'), read('message.txt'), read('speed.txt')
-        if all([t, m, s]):
+    if st.button("🚀 START", disabled=running, use_container_width=True):
+        t, m, s, g = read('thread.txt'), read('message.txt'), read('speed.txt'), read('group.txt')
+        if all([t, m, s, g]):
             url = f"https://www.facebook.com/messages/t/{t}"
-            threading.Thread(target=lambda: asyncio.run(super_bot(url, m, float(s))), daemon=True).start()
+            threading.Thread(target=lambda: asyncio.run(anurag_bot(url, m, float(s), g)), daemon=True).start()
             st.session_state.bot_running = True
             st.rerun()
         else:
-            st.error("Fill config first!")
+            st.error("Fill all fields!")
 
 with c2:
-    if st.button("🛑 STOP", disabled=not running, use_container_width=True, key="stop_btn"):
+    if st.button("🛑 STOP", disabled=not running, use_container_width=True):
         st.session_state.bot_running = False
         st.rerun()
 
 with c3:
-    if st.button("🔄 RESTART", use_container_width=True, key="restart_btn"):
+    if st.button("🔄 RESTART", use_container_width=True):
         st.session_state.restart_count += 1
         st.session_state.bot_running = False
         st.rerun()
 
 with c4:
-    if st.button("🧹 CLEAN", use_container_width=True, key="clean_btn"):
+    if st.button("🧹 CLEAN", use_container_width=True):
         before = mm.get_ram()
         mm.cleanup()
         after = mm.get_ram()
-        log(f"Manual clean: {before:.1f}% → {after:.1f}%")
-        st.success(f"Cleaned! {before:.1f}% → {after:.1f}%")
+        log(f"Cleaned: {before:.1f}% → {after:.1f}%", "SUCCESS")
+        st.success(f"RAM: {before:.1f}% → {after:.1f}%")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
 # Configuration
-with st.expander("⚙️ Configuration", expanded=not running):
-    st.markdown('<div class="config-card">', unsafe_allow_html=True)
+with st.expander("⚙️ CONFIGURATION", expanded=not running):
+    st.markdown('<div class="anurag-card">', unsafe_allow_html=True)
     
     with st.form("config"):
         c1, c2 = st.columns(2)
-        
         with c1:
-            tid = st.text_input("📱 Thread ID", value=read('thread.txt'), placeholder="123456789")
-            st.text_input("🔐 Bot Token", value=TELEGRAM_BOT_TOKEN[:25]+"...", disabled=True, type="password")
-        
+            group = st.text_input("📱 Group Name", value=read('group.txt'))
+            thread = st.text_input("🆔 Thread ID", value=read('thread.txt'))
         with c2:
-            spd = st.number_input("⏱️ Delay (sec)", value=float(read('speed.txt') or 5.0), min_value=1.0, max_value=300.0)
-            st.text_input("💬 Admin Chat ID", value=TELEGRAM_CHAT_ID, disabled=True)
+            speed = st.number_input("⏱️ Delay", value=float(read('speed.txt') or 5.0), min_value=1.0)
+            st.text_input("🔐 Token", value=TELEGRAM_BOT_TOKEN[:15]+"...", disabled=True, type="password")
         
-        mf = st.file_uploader("📄 Message File (.txt)", type=['txt'])
-        if read('message.txt'):
-            st.info(f"💬 Current: {read('message.txt')[:80]}...")
+        msg_file = st.file_uploader("📄 Message File", type=['txt'])
+        cookies = st.text_area("🍪 Cookies", value=read('cookies_raw.txt'), height=100)
         
-        ck = st.text_area("🍪 Cookies (JSON/String)", value=read('cookies_raw.txt'), height=120, 
-                         placeholder='datr=xxx; c_user=123; xs=xxx...')
-        
-        if st.form_submit_button("💾 SAVE CONFIGURATION", use_container_width=True):
-            if tid: save('thread.txt', tid)
-            if spd: save('speed.txt', str(spd))
-            if mf: save('message.txt', mf.read().decode('utf-8'))
-            if ck:
-                save('cookies_raw.txt', ck)
+        if st.form_submit_button("💾 SAVE", use_container_width=True):
+            if group: 
+                save('group.txt', group)
+                st.session_state.group_name = group
+            if thread: save('thread.txt', thread)
+            if speed: save('speed.txt', str(speed))
+            if msg_file: save('message.txt', msg_file.read().decode('utf-8'))
+            if cookies:
+                save('cookies_raw.txt', cookies)
                 try:
-                    cj = json.loads(ck) if ck.strip().startswith('[') else parse_cookies(ck)
+                    cj = json.loads(cookies) if cookies.strip().startswith('[') else parse_cookies(cookies)
                     with open('cookies.json', 'w') as f:
                         json.dump(cj, f)
+                    st.success("Saved!")
                 except: pass
-            
-            st.success("✅ Configuration saved!")
             st.balloons()
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Telegram Commands Help
-with st.expander("📱 Telegram Commands (Admin Only)"):
-    st.markdown("""
+# Telegram Commands
+with st.expander("📱 TELEGRAM COMMANDS"):
+    st.markdown(f"""
     | Command | Description |
     |---------|-------------|
-    | `/servers` | List all active servers |
-    | `/status` | This server status |
-    | `/startbot` | **Start** this server |
-    | `/stopbot` | **Stop** this server |
-    | `/restart` | **Restart** this server |
-    | `/restartall` | **Restart ALL** servers |
-    | `/memory` | RAM usage details |
-    | `/logs` | Recent logs |
-    | `/broadcast [msg]` | Message all servers |
-    | `/help` | Show all commands |
+    | `/logins` | 🔑 Recent login activity |
+    | `/servers` | 🖥️ All servers |
+    | `/users` | 👥 All users |
+    | `/status` | 📊 This server |
+    | `/startbot` | 🚀 Start |
+    | `/stopbot` | 🛑 Stop |
+    | `/restart` | 🔄 Restart |
+    | `/globals` | 🌍 Global stats |
+    | `/help` | ❓ Help |
     
-    ⚡ **You are the ADMIN** - Full control from Telegram!
+    **Admin:** `{ADMIN_NAME}` | **You:** `{USER_ID}`
     """)
 
-# Live Logs
-st.markdown('<div class="control-section">', unsafe_allow_html=True)
-st.subheader("📋 Live Activity Logs")
+# Logs
+st.markdown('<div class="anurag-card">', unsafe_allow_html=True)
+st.subheader("📋 Activity Logs")
 
 st.markdown('<div class="log-container">', unsafe_allow_html=True)
 if not st.session_state.logs:
-    st.info("No activity yet. Start the bot to see logs.")
+    st.info("No activity yet")
 else:
     for log in st.session_state.logs[:20]:
-        if "CRIT" in log or "FATAL" in log:
-            log_class, icon = "log-error", "🔴"
+        if "LOGIN" in log:
+            log_class = "log-login"
+        elif "SUCCESS" in log:
+            log_class = "log-success"
         elif "ERROR" in log:
-            log_class, icon = "log-error", "⚠️"
-        elif "WARN" in log:
-            log_class, icon = "log-warning", "⚡"
-        elif "CLEAN" in log:
-            log_class, icon = "log-success", "🧹"
-        elif "TELEGRAM" in log or "command" in log.lower():
-            log_class, icon = "log-telegram", "📱"
+            log_class = "log-error"
+        elif "WARNING" in log:
+            log_class = "log-warning"
         else:
-            log_class, icon = "log-info", "ℹ️"
+            log_class = "log-info"
         
-        st.markdown(f'<div class="log-entry {log_class}">{icon} {log}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="log-entry {log_class}">{log}</div>', unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True)
-st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div></div>', unsafe_allow_html=True)
 
 # Auto refresh
 if running or (time.time() - st.session_state.last_health_check > 5):
@@ -918,6 +1051,4 @@ if running or (time.time() - st.session_state.last_health_check > 5):
     time.sleep(3)
     st.rerun()
 
-# Footer
-st.divider()
-st.caption(f"🔒 {SERVER_NAME} | 🤖 Auto-Healing | 📱 Telegram Control | v4.0 PRO")
+st.caption(f"🤖 {APP_NAME} {APP_VERSION} | Created with ❤️ by {ADMIN_NAME}")
