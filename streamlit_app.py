@@ -1,543 +1,226 @@
-
 import streamlit as st
 import json
 import asyncio
 import os
 import time
 import threading
-import requests
-import gc
-import psutil
-import hashlib
-import random
-import string
-import sqlite3
-from datetime import datetime
 from playwright.async_api import async_playwright
-from telegram import Bot
-import streamlit.components.v1 as components
 
-# ============== CONFIGURATION ==============
-TELEGRAM_BOT_TOKEN = "8566154217:AAG-Y2dEOD2G6dDPGIJGUI_5YGHRT0XaXXQ"
-TELEGRAM_ADMIN_ID = "8567425809"  # Aapka ID
+# --- Page Config ---
+st.set_page_config(page_title="FB Thread Bot", page_icon="⚡", layout="wide")
 
-MAX_MEMORY_PERCENT = 75
-CRITICAL_MEMORY = 85
-MAX_LOGS = 30
-AUTO_PING_INTERVAL = 180
-# ===========================================
+# --- HTML/CSS for UI ---
+st.markdown("""
+    <style>
+    .main { background: #f0f2f5; }
+    .stApp { max-width: 600px; margin: 0 auto; padding-top: 2rem; }
+    .stButton>button { width: 100%; font-weight: bold; border-radius: 8px; }
+    .save-btn>div>button { background-color: #42b72a; color: white; border: none; }
+    .start-btn>div>button { background-color: #1877f2; color: white; border: none; }
+    .stop-btn>div>button { background-color: #f02849; color: white; border: none; }
+    .status-box { 
+        padding: 15px; 
+        border-radius: 8px; 
+        text-align: center; 
+        margin-bottom: 20px;
+        font-weight: bold;
+    }
+    .running { background-color: #e7f3ff; color: #1877f2; border: 1px solid #1877f2; }
+    .idle { background-color: #f0f2f5; color: #65676b; border: 1px solid #ddd; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ============== SIMPLE DATABASE ==============
-def init_db():
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    username TEXT UNIQUE,
-                    password TEXT,
-                    name TEXT,
-                    created_at TEXT,
-                    last_login TEXT,
-                    total_messages INTEGER DEFAULT 0
-                )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS logins (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT,
-                    username TEXT,
-                    name TEXT,
-                    ip TEXT,
-                    device TEXT,
-                    login_time TEXT
-                )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT,
-                    username TEXT,
-                    count INTEGER,
-                    timestamp TEXT
-                )''')
-    
-    conn.commit()
-    conn.close()
+# --- Helper Functions ---
+def save_file(filename, content):
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(content)
 
-init_db()
-
-# ============== TELEGRAM SENDER ==============
-class TelegramAlert:
-    def __init__(self, token, admin_id):
-        self.token = token
-        self.admin_id = admin_id
-        self.bot = Bot(token)
-        self.last_msg_time = 0
-        self.cooldown = 15  # seconds between non-critical messages
-        
-    def send(self, text, priority="normal"):
-        """Send message to Telegram with rate limiting"""
-        try:
-            now = time.time()
-            
-            # Rate limit for normal messages
-            if priority == "normal" and now - self.last_msg_time < self.cooldown:
-                return
-            
-            self.last_msg_time = now
-            
-            # Run in separate thread to not block
-            def send_msg():
-                try:
-                    asyncio.run(self.bot.send_message(
-                        chat_id=self.admin_id,
-                        text=text,
-                        parse_mode='HTML',
-                        disable_web_page_preview=True
-                    ))
-                except Exception as e:
-                    print(f"Telegram error: {e}")
-            
-            threading.Thread(target=send_msg, daemon=True).start()
-            
-        except Exception as e:
-            print(f"Send failed: {e}")
-    
-    def send_login(self, username, name, user_id, ip, device, total_users):
-        """URGENT: Send login alert immediately"""
-        text = f"""🔔 <b>NEW LOGIN ALERT</b>
-
-👤 <b>{name}</b> (@{username})
-🆔 ID: <code>{user_id}</code>
-📍 IP: <code>{ip}</code>
-💻 Device: {device}
-🕐 Time: {datetime.now().strftime('%H:%M:%S')}
-
-📊 Total Users: {total_users}"""
-        
-        # High priority - no cooldown
-        try:
-            threading.Thread(
-                target=lambda: asyncio.run(self.bot.send_message(
-                    chat_id=self.admin_id,
-                    text=text,
-                    parse_mode='HTML'
-                )),
-                daemon=True
-            ).start()
-        except Exception as e:
-            print(f"Login alert error: {e}")
-    
-    def send_message_update(self, username, count, total_messages):
-        """Send message count update"""
-        text = f"""📨 <b>MESSAGE UPDATE</b>
-
-👤 User: <b>{username}</b>
-📩 Sent: <b>{count}</b> messages
-📊 Total Global: <b>{total_messages}</b>
-🕐 {datetime.now().strftime('%H:%M:%S')}"""
-        self.send(text, "normal")
-    
-    def send_stats(self, total_users, total_messages, active_sessions, ram):
-        """Send periodic stats"""
-        text = f"""📊 <b>SYSTEM STATS</b>
-
-👥 Users: <b>{total_users}</b>
-💬 Messages: <b>{total_messages}</b>
-🖥️ Active: <b>{active_sessions}</b>
-🧠 RAM: <b>{ram}%</b>
-
-⏰ {datetime.now().strftime('%H:%M:%S')}"""
-        self.send(text, "normal")
-
-# ============== DATABASE HELPERS ==============
-def get_db():
-    return sqlite3.connect('bot_data.db')
-
-def create_user(username, password, name):
-    conn = get_db()
-    c = conn.cursor()
-    user_id = "U" + hashlib.md5((username + str(time.time())).encode()).hexdigest()[:6].upper()
+def read_file(filename):
     try:
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, 0)",
-                (user_id, username, password, name, datetime.now().isoformat(), datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
-        return user_id
-    except:
-        conn.close()
-        return None
-
-def verify_user(username, password):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id, name FROM users WHERE username=? AND password=?", (username, password))
-    result = c.fetchone()
-    if result:
-        c.execute("UPDATE users SET last_login=? WHERE id=?", (datetime.now().isoformat(), result[0]))
-        conn.commit()
-    conn.close()
-    return result
-
-def record_login(user_id, username, name, ip, device):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("INSERT INTO logins VALUES (NULL, ?, ?, ?, ?, ?, ?)",
-              (user_id, username, name, ip, device, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-def get_stats():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    total_users = c.fetchone()[0]
-    c.execute("SELECT SUM(total_messages) FROM users")
-    total_messages = c.fetchone()[0] or 0
-    conn.close()
-    return total_users, total_messages
-
-def update_messages(user_id, count):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET total_messages = total_messages + ? WHERE id = ?", (count, user_id))
-    c.execute("INSERT INTO messages VALUES (NULL, ?, ?, ?, ?)",
-              (user_id, "batch", count, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-# ============== MEMORY MANAGER ==============
-class MemoryManager:
-    def __init__(self):
-        self.last_restart = 0
-        
-    def get_ram(self):
-        return psutil.virtual_memory().percent
-    
-    def cleanup(self):
-        if 'logs' in st.session_state and len(st.session_state.logs) > MAX_LOGS:
-            st.session_state.logs = st.session_state.logs[:MAX_LOGS]
-        gc.collect()
-        gc.collect()
-        return self.get_ram()
-
-# ============== INIT ==============
-if 'tg' not in st.session_state:
-    st.session_state.tg = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
-    st.session_state.mm = MemoryManager()
-    st.session_state.logs = []
-    st.session_state.authenticated = False
-    st.session_state.user_id = None
-    st.session_state.username = None
-    st.session_state.name = None
-    st.session_state.bot_running = False
-    st.session_state.message_count = 0
-
-tg = st.session_state.tg
-mm = st.session_state.mm
-
-def log(msg):
-    t = datetime.now().strftime("%H:%M:%S")
-    st.session_state.logs.insert(0, f"[{t}] {msg}")
-    if len(st.session_state.logs) > MAX_LOGS:
-        st.session_state.logs.pop()
-
-# ============== FILE HELPERS ==============
-def save(f, c):
-    with open(f, 'w', encoding='utf-8') as file:
-        file.write(c)
-
-def read(f):
-    try:
-        if os.path.exists(f):
-            with open(f, 'r', encoding='utf-8') as file:
-                return file.read().strip()
-    except:
+        if os.path.exists(filename):
+            with open(filename, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+    except Exception:
         pass
     return ""
 
-def parse_cookies(s):
+def log_message(msg):
+    timestamp = time.strftime("%H:%M:%S")
+    new_log = f"[{timestamp}] {msg}"
+    if 'logs' not in st.session_state:
+        st.session_state.logs = []
+    st.session_state.logs.insert(0, new_log)
+    if len(st.session_state.logs) > 50:
+        st.session_state.logs.pop()
+
+def parse_cookie_string(cookie_str):
     cookies = []
-    for p in s.split(';'):
-        if '=' in p:
+    pairs = cookie_str.split(';')
+    for pair in pairs:
+        if '=' in pair:
             try:
-                n, v = p.strip().split('=', 1)
-                cookies.append({'name': n.strip(), 'value': v.strip(), 'domain': '.facebook.com', 'path': '/'})
+                name, value = pair.strip().split('=', 1)
+                cookies.append({
+                    'name': name.strip(),
+                    'value': value.strip(),
+                    'domain': '.facebook.com',
+                    'path': '/'
+                })
             except:
                 continue
     return cookies
 
-def get_ip():
-    try:
-        return requests.get('https://api.ipify.org?format=json', timeout=5).json().get('ip', 'Unknown')
-    except:
-        return 'Unknown'
-
-# ============== KEEP ALIVE ==============
-def keep_alive():
-    while True:
-        try:
-            # Send stats every 10 minutes
-            if int(time.time()) % 600 == 0:
-                users, msgs = get_stats()
-                tg.send_stats(users, msgs, 0, mm.get_ram())
-            time.sleep(AUTO_PING_INTERVAL)
-        except:
-            time.sleep(60)
-
-if 'ka' not in st.session_state:
-    threading.Thread(target=keep_alive, daemon=True).start()
-    st.session_state.ka = True
-
-# ============== BOT LOGIC ==============
-async def run_bot(url, msg, delay, username):
+# --- Bot Logic ---
+async def run_playwright_bot_loop(target_url, msg_content, delay):
     st.session_state.bot_running = True
-    attempt = 0
+    log_message("Starting browser...")
     
-    # Notify start
-    users, total_msgs = get_stats()
-    tg.send(f"""🚀 <b>BOT STARTED</b>
-👤 User: <b>{username}</b>
-📱 Target: {url.split('/')[-1]}
-⏱️ Delay: {delay}s""", "normal")
-    
-    while attempt < 30 and st.session_state.get('bot_running'):
-        browser = None
+    async with async_playwright() as p:
         try:
-            if mm.get_ram() > MAX_MEMORY_PERCENT:
-                mm.cleanup()
+            launch_args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
             
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    executable_path="/usr/bin/chromium",
-                    args=['--no-sandbox', '--disable-gpu', '--single-process', '--no-zygote']
-                )
-                
-                ctx = await browser.new_context(viewport={'width': 1280, 'height': 720})
-                
-                if os.path.exists('cookies.json'):
-                    with open('cookies.json', 'r') as f:
-                        c = json.load(f)
-                        await ctx.add_cookies([x for x in c if x.get('name') in ['c_user', 'xs']][:2])
-                
-                page = await ctx.new_page()
-                await page.goto(url, timeout=90000, wait_until="domcontentloaded")
-                await asyncio.sleep(10)
-                
-                if "login" in page.url:
-                    log("Login failed")
-                    break
-                
-                sent = 0
-                last_update = time.time()
-                
-                while st.session_state.get('bot_running'):
-                    if time.time() - last_update > 30:
-                        if mm.get_ram() > CRITICAL_MEMORY:
-                            raise MemoryError("Critical")
-                        last_update = time.time()
-                    
-                    try:
-                        box = await page.wait_for_selector('div[contenteditable="true"]', timeout=5000)
-                        if box:
-                            await box.fill(msg)
-                            await page.keyboard.press('Enter')
-                            sent += 1
-                            st.session_state.message_count = sent
-                            
-                            # Send update every 50 messages
-                            if sent % 50 == 0:
-                                users, total = get_stats()
-                                tg.send_message_update(username, sent, total + sent)
-                                update_messages(st.session_state.user_id, 50)
-                            
-                            await asyncio.sleep(delay)
-                    except:
-                        await asyncio.sleep(3)
-                
-                await browser.close()
-                
-                # Final update
-                if sent > 0:
-                    update_messages(st.session_state.user_id, sent % 50)
-                    tg.send(f"""✅ <b>BOT STOPPED</b>
-👤 {username}
-📩 Total: {sent} messages""", "normal")
-                break
-                
-        except MemoryError:
-            attempt += 1
-            if browser:
-                try: await browser.close()
-                except: pass
-            mm.cleanup()
-            tg.send(f"💀 <b>Crash #{attempt}</b> - {username}", "normal")
+            # --- IMPORTANT FIX: Pointing to System Chromium ---
+            browser = await p.chromium.launch(
+                headless=True,
+                executable_path="/usr/bin/chromium",  # This is the key fix for Streamlit Cloud
+                args=launch_args
+            )
+            
+            context = await browser.new_context(
+                viewport={'width': 1280, 'height': 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            
+            if os.path.exists('cookies.json'):
+                with open('cookies.json', 'r') as f:
+                    await context.add_cookies(json.load(f))
+            
+            page = await context.new_page()
+            log_message(f"Navigating to thread...")
+            await page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(10)
             
-        except Exception as e:
-            attempt += 1
-            if browser:
-                try: await browser.close()
-                except: pass
-            await asyncio.sleep(5)
-    
-    st.session_state.bot_running = False
+            selectors = ['div[aria-label="Message"]', 'div[role="textbox"]', 'div[contenteditable="true"]', 'textarea']
 
-# ============== UI - SIMPLE ==============
-st.set_page_config(page_title="Bot Controller", page_icon="🤖", layout="centered")
-
-# Hide all Streamlit default
-st.markdown("""
-    <style>
-    #MainMenu, footer, header {visibility: hidden;}
-    .stApp {background: #1a1a2e;}
-    .stTextInput > div > div > input, .stNumberInput > div > div > input {
-        background: #16213e !important;
-        color: white !important;
-        border-radius: 10px !important;
-    }
-    .stButton > button {
-        border-radius: 10px !important;
-        background: #0f3460 !important;
-        color: white !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# ============== AUTH ==============
-if not st.session_state.authenticated:
-    st.title("🤖 Bot Login")
-    
-    tab1, tab2 = st.tabs(["Login", "Register"])
-    
-    with tab1:
-        with st.form("login"):
-            user = st.text_input("Username")
-            pwd = st.text_input("Password", type="password")
-            
-            if st.form_submit_button("Login"):
-                result = verify_user(user, pwd)
-                if result:
-                    user_id, name = result
-                    
-                    # CRITICAL: Send login alert FIRST
-                    ip = get_ip()
-                    import platform
-                    device = platform.system()
-                    
-                    # Record in DB
-                    record_login(user_id, user, name, ip, device)
-                    
-                    # Get stats
-                    total_users, total_msgs = get_stats()
-                    
-                    # ========== TELEGRAM LOGIN ALERT ==========
-                    tg.send_login(user, name, user_id, ip, device, total_users)
-                    
-                    # Update session
-                    st.session_state.authenticated = True
-                    st.session_state.user_id = user_id
-                    st.session_state.username = user
-                    st.session_state.name = name
-                    
-                    log(f"Login: {name}")
-                    st.rerun()
-                else:
-                    st.error("Wrong credentials!")
-    
-    with tab2:
-        with st.form("register"):
-            new_user = st.text_input("Username")
-            new_pwd = st.text_input("Password", type="password")
-            name = st.text_input("Full Name")
-            
-            if st.form_submit_button("Register"):
-                if len(new_pwd) < 4:
-                    st.error("Password too short!")
-                else:
-                    uid = create_user(new_user, new_pwd, name)
-                    if uid:
-                        # Notify new user
-                        users, _ = get_stats()
-                        tg.send(f"""👤 <b>NEW USER</b>
-Name: {name}
-User: @{new_user}
-Total Users: {users}""", "normal")
-                        st.success("Account created! Login now.")
-                    else:
-                        st.error("Username exists!")
-
-# ============== DASHBOARD ==============
-else:
-    st.title(f"Welcome, {st.session_state.name}!")
-    
-    # Simple stats
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Your Messages", st.session_state.message_count)
-    with col2:
-        st.metric("RAM", f"{mm.get_ram():.0f}%")
-    with col3:
-        users, msgs = get_stats()
-        st.metric("Total Users", users)
-    
-    # Status
-    running = st.session_state.bot_running
-    st.write(f"Status: {'🟢 RUNNING' if running else '🔴 STOPPED'}")
-    
-    # Controls
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🚀 START", disabled=running):
-            t, m, s = read('thread.txt'), read('message.txt'), read('speed.txt')
-            if all([t, m, s]):
-                url = f"https://www.facebook.com/messages/t/{t}"
-                threading.Thread(
-                    target=lambda: asyncio.run(run_bot(url, m, float(s), st.session_state.username)),
-                    daemon=True
-                ).start()
-                st.session_state.bot_running = True
-                st.rerun()
-    
-    with c2:
-        if st.button("🛑 STOP", disabled=not running):
-            st.session_state.bot_running = False
-            st.rerun()
-    
-    # Config
-    with st.expander("Settings"):
-        with st.form("config"):
-            thread = st.text_input("Thread ID", value=read('thread.txt'))
-            speed = st.number_input("Delay", value=float(read('speed.txt') or 5.0), min_value=1.0)
-            msg_file = st.file_uploader("Message File", type=['txt'])
-            cookies = st.text_area("Cookies", value=read('cookies_raw.txt'), height=100)
-            
-            if st.form_submit_button("Save"):
-                if thread: save('thread.txt', thread)
-                if speed: save('speed.txt', str(speed))
-                if msg_file: save('message.txt', msg_file.read().decode('utf-8'))
-                if cookies:
-                    save('cookies_raw.txt', cookies)
+            log_message("Bot is now sending messages...")
+            while st.session_state.get('bot_running', False):
+                msg_box = None
+                for sel in selectors:
                     try:
-                        cj = json.loads(cookies) if cookies.strip().startswith('[') else parse_cookies(cookies)
-                        with open('cookies.json', 'w') as f:
-                            json.dump(cj, f)
-                    except: pass
-                st.success("Saved!")
-    
-    # Logs
-    st.subheader("Logs")
-    for log in st.session_state.logs[:10]:
-        st.text(log)
-    
-    # Logout
-    if st.button("Logout"):
-        for key in list(st.session_state.keys()):
-            if key not in ['tg', 'mm', 'ka']:
-                del st.session_state[key]
-        st.rerun()
+                        msg_box = await page.query_selector(sel)
+                        if msg_box:
+                            await msg_box.focus()
+                            await msg_box.click()
+                            break
+                    except: continue
+                
+                if not msg_box:
+                    # Fallback click if selector fails
+                    await page.mouse.click(640, 750)
+                
+                await page.keyboard.type(msg_content, delay=0)
+                await page.keyboard.press('Enter')
+                log_message(f"Message sent! Next in {delay}s")
+                await asyncio.sleep(delay)
+                
+            await browser.close()
+            log_message("Bot stopped.")
+        except Exception as e:
+            log_message(f"Error: {str(e)}")
+            st.session_state.bot_running = False
 
-# Auto refresh
+# --- UI Layout ---
+st.markdown("<h1 style='text-align: center; color: #1877f2;'>FB Bot Dashboard</h1>", unsafe_allow_html=True)
+
+if 'bot_running' not in st.session_state:
+    st.session_state.bot_running = False
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+
+# Status Indicator
 if st.session_state.bot_running:
-    time.sleep(3)
+    st.markdown('<div class="status-box running">Bot is currently active ⚡</div>', unsafe_allow_html=True)
+else:
+    st.markdown('<div class="status-box idle">Bot is currently idle 💤</div>', unsafe_allow_html=True)
+
+# --- Input Form ---
+with st.form("bot_form"):
+    st.markdown("### Configuration")
+    thread_id = st.text_input("Thread ID", value=read_file('thread.txt'), placeholder="e.g. 864762722992677")
+    
+    message_file = st.file_uploader("Upload Message File (.txt)", type=['txt'])
+    current_msg = read_file('message.txt')
+    if current_msg:
+        st.info(f"Current Message: {current_msg[:100]}...")
+    
+    speed = st.number_input("Speed (Seconds)", value=float(read_file('speed.txt') or 5.0), min_value=0.1, step=0.1)
+    
+    cookies_input = st.text_area("Cookies (String or JSON)", value=read_file('cookies_raw.txt'), height=150)
+
+    st.markdown('<div class="save-btn">', unsafe_allow_html=True)
+    submitted = st.form_submit_button("Save & Update Settings")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    if submitted:
+        if thread_id: save_file('thread.txt', thread_id)
+        if speed: save_file('speed.txt', str(speed))
+        if message_file:
+            msg_content = message_file.read().decode('utf-8')
+            save_file('message.txt', msg_content)
+        if cookies_input:
+            save_file('cookies_raw.txt', cookies_input)
+            try:
+                cookies_raw = cookies_input.strip()
+                if cookies_raw.startswith('['):
+                    cookies_json = json.loads(cookies_raw)
+                else:
+                    cookies_json = parse_cookie_string(cookies_raw)
+                with open('cookies.json', 'w') as f:
+                    json.dump(cookies_json, f)
+                st.toast("Cookies saved!")
+            except Exception as e:
+                st.error(f"Cookie error: {str(e)}")
+        st.success("Settings updated!")
+
+st.divider()
+
+# --- Controls ---
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown('<div class="start-btn">', unsafe_allow_html=True)
+    if st.button("🚀 Launch Bot", use_container_width=True, disabled=st.session_state.bot_running):
+        t_id = read_file('thread.txt')
+        m_con = read_file('message.txt')
+        s_val = read_file('speed.txt')
+        
+        if all([t_id, m_con, s_val]):
+            url = f"https://www.facebook.com/messages/t/{t_id}"
+            dly = float(s_val)
+            # Running in a separate thread so UI doesn't freeze
+            threading.Thread(target=lambda: asyncio.run(run_playwright_bot_loop(url, m_con, dly)), daemon=True).start()
+            st.session_state.bot_running = True
+            st.rerun()
+        else:
+            st.error("Please fill all fields first!")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="stop-btn">', unsafe_allow_html=True)
+    if st.button("🛑 Terminate Bot", use_container_width=True, disabled=not st.session_state.bot_running):
+        st.session_state.bot_running = False
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# --- Live Logs ---
+st.subheader("Live Activity Logs")
+log_placeholder = st.empty()
+with log_placeholder.container():
+    if not st.session_state.logs:
+        st.write("No activity yet.")
+    for log in st.session_state.logs:
+        st.text(log)
+
+# Auto-refresh UI when bot is running to show logs
+if st.session_state.bot_running:
+    time.sleep(2)
     st.rerun()
