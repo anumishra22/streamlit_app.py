@@ -1,5 +1,2 @@
 streamlit
 playwright
-requests
-psutil
-python-telegram-bot
